@@ -1,0 +1,68 @@
+# AI Security Camera - Git Ignore
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+pip-log.txt
+pip-delete-this-directory.txt
+.eggs/
+*.egg-info/
+*.egg
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Project specific - user configuration
+config.yaml
+
+# Database files
+database/*.db
+database/*.db-journal
+
+# Saved images and logs
+images/
+logs/
+
+# Debug output
+debug/
+
+# Temp files
+*.tmp
+*.temp
+*.log
+
+# Frame buffer (shared memory)
+/dev/shm/security_cam/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Screenshots and test files
+screenshots/
+screenshot_*.jpg
+test_*.jpg
+
+# Secrets and credentials
+*.key
+*.pem
+secrets.yaml
+.env
+
+# Documentation build
+Documentation/
+docs/_build/
+
+# Model files (large, users should obtain their own)
+# Uncomment the next line if you don't want to include the .hef model
+# models/*.hef

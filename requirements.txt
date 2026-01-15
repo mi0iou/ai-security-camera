@@ -1,0 +1,24 @@
+# AI Security Camera - Python Dependencies
+
+# Core
+flask>=2.3.0
+pyyaml>=6.0
+numpy>=1.24.0
+opencv-python>=4.8.0
+requests>=2.31.0
+
+# Raspberry Pi Camera
+picamera2>=0.3.12
+
+# YOLO (fallback if Hailo unavailable)
+ultralytics>=8.0.0
+
+# Hailo Runtime - install separately via Hailo's instructions
+# https://hailo.ai/developer-zone/
+# hailo-platform
+
+# Database (sqlite3 is included in Python standard library)
+
+# Optional: ANPR
+# easyocr>=1.7.0
+# paddleocr>=2.7.0
