@@ -91,7 +91,7 @@ cd ai-security-camera
 
 You'll need a YOLOv8s model compiled for Hailo-8L (`yolov8s.hef`). Options:
 
-1. **Download pre-compiled** from Hailo Model Zoo (requires Hailo developer account)
+1. **Download pre-compiled** from the /model/ folder
 2. **Compile your own** using the Hailo Dataflow Compiler (see below)
 
 Place the model in the `models/` directory:
