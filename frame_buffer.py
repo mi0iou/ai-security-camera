@@ -101,11 +101,19 @@ class FrameBuffer:
             with open(temp_frame_path, 'wb') as f:
                 f.write(jpeg.tobytes())
             
+            # Build live per-class counts from current detections
+            live_counts = {}
+            if detections:
+                for det in detections:
+                    name = det['class_name']
+                    live_counts[name] = live_counts.get(name, 0) + 1
+            
             # Write metadata
             meta = {
                 'timestamp': time.time(),
                 'detection_count': len(detections) if detections else 0,
-                'stats': stats or {}
+                'stats': stats or {},
+                'live_counts': live_counts
             }
             with open(temp_meta_path, 'w') as f:
                 json.dump(meta, f)
@@ -168,3 +176,4 @@ class FrameBuffer:
 
 # Global instance - each process gets its own but they share via filesystem
 frame_buffer = FrameBuffer()
+

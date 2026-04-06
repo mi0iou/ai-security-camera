@@ -18,7 +18,7 @@ cameras:
 detection:
   yolo_model: "yolov8s.pt"                     # Fallback YOLO model (CPU)
   confidence_threshold: 0.5                    # Minimum confidence (0.0-1.0)
-  classes_to_detect: null                      # null = all classes, or list like [0, 2, 5, 7]
+  classes_to_detect: null                      # null = all 80 COCO classes, or list like [0, 2, 5, 7]
   # Common COCO classes:
   #   0: person, 1: bicycle, 2: car, 3: motorcycle
   #   5: bus, 7: truck, 14: bird, 15: cat, 16: dog
@@ -44,7 +44,7 @@ alerts:
   ntfy_server: "https://ntfy.sh"              # ntfy server URL (or http://localhost for local)
   ntfy_topic: "your-secret-topic-change-this" # Unique topic name
   send_images: true                           # Attach images to alerts
-  cooldown_seconds: 60                        # Minimum seconds between alerts for same plate/person
+  cooldown_seconds: 30                        # Minimum seconds between alerts for same plate/person
   
   alert_on:
     unknown_plate: true         # Alert on unrecognised plates
@@ -57,12 +57,16 @@ storage:
   save_images: true             # Enable image saving
   image_path: "images/"         # Directory for saved images
   max_storage_mb: 10000         # Max storage in MB (10GB default)
-  save_detection_frames: true   # Save frames with detections
+  save_detection_frames: false  # Save frames with detections (generates many files)
   save_anpr_frames: true        # Save ANPR capture frames
 
 # Performance Tuning
 performance:
   detection_interval: 0.05      # Seconds between detections (0.05 = 20 FPS target)
+  detection_log_cooldown: 30    # Seconds between logging same object type to database
+                                # Prevents DB spam when objects sit in frame
+                                # Live feed still shows all detections regardless
+                                # Set to 0 to log every detection
   anpr_timeout: 5               # Seconds to wait for ANPR processing
   max_queue_size: 10            # Max frames in ANPR queue
 

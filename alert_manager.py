@@ -205,7 +205,7 @@ class AlertManager:
             title="Person Detected",
             message=f"Count: {count}\n"
                    f"Time: {datetime.now().strftime('%H:%M:%S')}",
-            priority=2,
+            priority=4,
             image_path=image_path,
             tags=["walking", "person"]
         )

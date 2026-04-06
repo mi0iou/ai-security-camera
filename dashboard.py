@@ -43,10 +43,56 @@ def stream_status():
     age = frame_buffer.get_frame_age()
     stats = frame_buffer.get_stats()
     return jsonify({
-        'active': age < 5.0,  # Consider active if frame < 5 seconds old
+        'active': age < 5.0,
         'frame_age': age,
         'stats': stats
     })
+
+
+@app.route('/api/reset', methods=['POST'])
+def reset_stats():
+    """Reset all counters"""
+    try:
+        db.reset_statistics()
+        return jsonify({'success': True})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/stats')
+def api_stats():
+    """API endpoint for database stats (plates, alerts)"""
+    try:
+        stats = db.get_statistics(24)
+        return jsonify({
+            'stats': stats
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/live_counts')
+def api_live_counts():
+    """API endpoint for live detection counts from current frame"""
+    meta = frame_buffer.get_meta()
+    if meta:
+        return jsonify({
+            'live_counts': meta.get('live_counts', {}),
+            'total': meta.get('detection_count', 0)
+        })
+    return jsonify({'live_counts': {}, 'total': 0})
+
+
+@app.route('/api/events')
+def api_events():
+    """API endpoint for recent events"""
+    try:
+        events = db.get_recent_events(hours=24, limit=50)
+        return jsonify({
+            'events': events
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 
 @app.route('/')
@@ -55,9 +101,6 @@ def dashboard():
         stats = db.get_statistics(24)
         events = db.get_recent_events(hours=24, limit=50)
         plates = db.get_all_known_plates()
-        
-        event_types = [e['event_type'] for e in events if e['event_type']]
-        type_counts = Counter(event_types)
         
         html = '''
 <!DOCTYPE html>
@@ -103,7 +146,6 @@ def dashboard():
             overflow-x: hidden;
         }
         
-        /* Animated background grid */
         body::before {
             content: '';
             position: fixed;
@@ -127,7 +169,6 @@ def dashboard():
             z-index: 1;
         }
         
-        /* Header */
         .header {
             display: flex;
             justify-content: space-between;
@@ -170,6 +211,29 @@ def dashboard():
             font-family: 'JetBrains Mono', monospace;
         }
         
+        .header-controls {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+        
+        .reset-btn {
+            padding: 10px 20px;
+            background: var(--bg-card);
+            border: 1px solid var(--accent-red);
+            border-radius: 30px;
+            color: var(--accent-red);
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.85rem;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+        
+        .reset-btn:hover {
+            background: rgba(255, 51, 102, 0.2);
+            box-shadow: var(--glow-red);
+        }
+        
         .status-badge {
             display: flex;
             align-items: center;
@@ -209,7 +273,6 @@ def dashboard():
             50% { opacity: 0.5; transform: scale(1.2); }
         }
         
-        /* Main Grid Layout */
         .main-grid {
             display: grid;
             grid-template-columns: 1fr 400px;
@@ -222,7 +285,6 @@ def dashboard():
             }
         }
         
-        /* Video Feed Section */
         .video-section {
             background: var(--bg-card);
             border-radius: 16px;
@@ -248,9 +310,7 @@ def dashboard():
             color: var(--text-primary);
         }
         
-        .section-title span {
-            font-size: 1.2rem;
-        }
+        .section-title span { font-size: 1.2rem; }
         
         .live-badge {
             display: flex;
@@ -315,14 +375,7 @@ def dashboard():
             gap: 15px;
         }
         
-        .video-overlay.hidden {
-            display: none;
-        }
-        
-        .video-overlay .icon {
-            font-size: 4rem;
-            opacity: 0.5;
-        }
+        .video-overlay.hidden { display: none; }
         
         .video-overlay .spinner {
             width: 40px;
@@ -333,11 +386,8 @@ def dashboard():
             animation: spin 1s linear infinite;
         }
         
-        @keyframes spin {
-            to { transform: rotate(360deg); }
-        }
+        @keyframes spin { to { transform: rotate(360deg); } }
         
-        /* Stats Section */
         .stats-grid {
             display: grid;
             grid-template-columns: repeat(4, 1fr);
@@ -347,9 +397,7 @@ def dashboard():
         }
         
         @media (max-width: 900px) {
-            .stats-grid {
-                grid-template-columns: repeat(2, 1fr);
-            }
+            .stats-grid { grid-template-columns: repeat(2, 1fr); }
         }
         
         .stat-card {
@@ -384,7 +432,6 @@ def dashboard():
             letter-spacing: 0.5px;
         }
         
-        /* Sidebar */
         .sidebar {
             display: flex;
             flex-direction: column;
@@ -398,7 +445,6 @@ def dashboard():
             overflow: hidden;
         }
         
-        /* Detection Types */
         .detection-list {
             padding: 15px;
             display: flex;
@@ -429,9 +475,7 @@ def dashboard():
             font-weight: 500;
         }
         
-        .detection-icon {
-            font-size: 1.3rem;
-        }
+        .detection-icon { font-size: 1.3rem; }
         
         .detection-count {
             font-family: 'JetBrains Mono', monospace;
@@ -440,10 +484,7 @@ def dashboard():
             color: var(--accent-cyan);
         }
         
-        /* Events Table */
-        .events-section {
-            margin-top: 25px;
-        }
+        .events-section { margin-top: 25px; }
         
         .events-table-container {
             max-height: 400px;
@@ -472,9 +513,7 @@ def dashboard():
             top: 0;
         }
         
-        .events-table tr:hover {
-            background: var(--bg-card-hover);
-        }
+        .events-table tr:hover { background: var(--bg-card-hover); }
         
         .events-table .timestamp {
             font-family: 'JetBrains Mono', monospace;
@@ -515,7 +554,6 @@ def dashboard():
             color: var(--accent-orange);
         }
         
-        /* Plates Section */
         .plates-list {
             padding: 15px;
             display: flex;
@@ -547,13 +585,9 @@ def dashboard():
             color: var(--accent-orange);
         }
         
-        .plate-item.blacklist .plate-number {
-            color: var(--accent-red);
-        }
+        .plate-item.blacklist .plate-number { color: var(--accent-red); }
         
-        .plate-info {
-            text-align: right;
-        }
+        .plate-info { text-align: right; }
         
         .plate-owner {
             font-size: 0.9rem;
@@ -571,7 +605,6 @@ def dashboard():
             font-weight: 600;
         }
         
-        /* Footer */
         .footer {
             margin-top: 40px;
             padding: 20px;
@@ -581,30 +614,13 @@ def dashboard():
             font-size: 0.85rem;
         }
         
-        .footer span {
-            color: var(--accent-cyan);
-        }
+        .footer span { color: var(--accent-cyan); }
         
-        /* Scrollbar */
-        ::-webkit-scrollbar {
-            width: 8px;
-            height: 8px;
-        }
+        ::-webkit-scrollbar { width: 8px; height: 8px; }
+        ::-webkit-scrollbar-track { background: var(--bg-secondary); }
+        ::-webkit-scrollbar-thumb { background: var(--border-color); border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
         
-        ::-webkit-scrollbar-track {
-            background: var(--bg-secondary);
-        }
-        
-        ::-webkit-scrollbar-thumb {
-            background: var(--border-color);
-            border-radius: 4px;
-        }
-        
-        ::-webkit-scrollbar-thumb:hover {
-            background: var(--text-muted);
-        }
-        
-        /* Empty state */
         .empty-state {
             padding: 30px;
             text-align: center;
@@ -622,25 +638,27 @@ def dashboard():
     <div class="container">
         <header class="header">
             <div class="logo">
-                <div class="logo-icon">🎯</div>
+                <div class="logo-icon">&#127919;</div>
                 <div>
                     <h1>AI Security Command Center</h1>
                     <p>HAILO-8L + YOLOv8 // RPi5</p>
                 </div>
             </div>
-            <div class="status-badge" id="systemStatus">
-                <div class="status-dot"></div>
-                <span id="statusText">CONNECTING...</span>
+            <div class="header-controls">
+                <button class="reset-btn" onclick="resetCounters()">Reset Counters</button>
+                <div class="status-badge" id="systemStatus">
+                    <div class="status-dot"></div>
+                    <span id="statusText">CONNECTING...</span>
+                </div>
             </div>
         </header>
         
         <div class="main-grid">
             <div class="left-column">
-                <!-- Live Video Feed -->
                 <div class="video-section">
                     <div class="section-header">
                         <div class="section-title">
-                            <span>📹</span> Live Feed - Detection Camera
+                            <span>&#128249;</span> Live Feed - Detection Camera
                         </div>
                         <div class="live-badge" id="liveBadge">
                             <span id="liveText">Connecting</span>
@@ -657,34 +675,32 @@ def dashboard():
                     </div>
                     <div class="stats-grid">
                         <div class="stat-card">
-                            <div class="stat-value cyan" id="statTotal">{{ stats.get('total_events', 0) }}</div>
-                            <div class="stat-label">Total Detections</div>
+                            <div class="stat-value cyan" id="statTotal">0</div>
+                            <div class="stat-label">In Frame Now</div>
                         </div>
                         <div class="stat-card">
-                            <div class="stat-value green" id="statPeople">{{ stats.get('people_detections', 0) }}</div>
-                            <div class="stat-label">People</div>
+                            <div class="stat-value green" id="statPeople">0</div>
+                            <div class="stat-label">People Now</div>
                         </div>
                         <div class="stat-card">
                             <div class="stat-value orange" id="statPlates">{{ stats.get('unique_plates', 0) }}</div>
-                            <div class="stat-label">Unique Plates</div>
+                            <div class="stat-label">Unique Plates (24h)</div>
                         </div>
                         <div class="stat-card">
                             <div class="stat-value red" id="statAlerts">{{ stats.get('blacklist_alerts', 0) }}</div>
-                            <div class="stat-label">⚠️ Alerts</div>
+                            <div class="stat-label">&#9888;&#65039; Alerts (24h)</div>
                         </div>
                     </div>
                 </div>
                 
-                <!-- Recent Events -->
                 <div class="card events-section">
                     <div class="section-header">
                         <div class="section-title">
-                            <span>📋</span> Recent Events
+                            <span>&#128203;</span> Recent Events
                         </div>
                         <span style="color: var(--text-secondary); font-size: 0.85rem;">Last 24 hours</span>
                     </div>
                     <div class="events-table-container">
-                        {% if events %}
                         <table class="events-table">
                             <thead>
                                 <tr>
@@ -714,67 +730,29 @@ def dashboard():
                                 {% endfor %}
                             </tbody>
                         </table>
-                        {% else %}
-                        <div class="empty-state">
-                            <div class="icon">📭</div>
-                            <p>No events recorded yet</p>
-                        </div>
-                        {% endif %}
                     </div>
                 </div>
             </div>
             
             <div class="sidebar">
-                <!-- Detection Types -->
                 <div class="card">
                     <div class="section-header">
                         <div class="section-title">
-                            <span>🎯</span> Detection Breakdown
+                            <span>&#127919;</span> In Frame Now
                         </div>
                     </div>
                     <div class="detection-list" id="detectionList">
-                        {% if type_counts %}
-                            {% for obj_type, count in type_counts %}
-                            <div class="detection-item">
-                                <div class="detection-name">
-                                    {% if obj_type == 'person' %}
-                                    <span class="detection-icon">👤</span>
-                                    {% elif obj_type == 'car' %}
-                                    <span class="detection-icon">🚗</span>
-                                    {% elif obj_type == 'truck' %}
-                                    <span class="detection-icon">🚚</span>
-                                    {% elif obj_type == 'bus' %}
-                                    <span class="detection-icon">🚌</span>
-                                    {% elif obj_type == 'motorcycle' %}
-                                    <span class="detection-icon">🏍️</span>
-                                    {% elif obj_type == 'bicycle' %}
-                                    <span class="detection-icon">🚲</span>
-                                    {% elif obj_type == 'dog' %}
-                                    <span class="detection-icon">🐕</span>
-                                    {% elif obj_type == 'cat' %}
-                                    <span class="detection-icon">🐈</span>
-                                    {% else %}
-                                    <span class="detection-icon">📦</span>
-                                    {% endif %}
-                                    {{ obj_type }}
-                                </div>
-                                <div class="detection-count">{{ count }}</div>
-                            </div>
-                            {% endfor %}
-                        {% else %}
                         <div class="empty-state">
-                            <div class="icon">🔍</div>
+                            <div class="icon">&#128269;</div>
                             <p>No detections yet</p>
                         </div>
-                        {% endif %}
                     </div>
                 </div>
                 
-                <!-- Known Plates -->
                 <div class="card">
                     <div class="section-header">
                         <div class="section-title">
-                            <span>🚗</span> Known Plates
+                            <span>&#128663;</span> Known Plates
                         </div>
                     </div>
                     <div class="plates-list">
@@ -792,7 +770,7 @@ def dashboard():
                             {% endfor %}
                         {% else %}
                         <div class="empty-state">
-                            <div class="icon">🚙</div>
+                            <div class="icon">&#128665;</div>
                             <p>No plates registered</p>
                         </div>
                         {% endif %}
@@ -802,12 +780,24 @@ def dashboard():
         </div>
         
         <footer class="footer">
-            Powered by <span>Hailo-8L AI Acceleration</span> • YOLOv8s • Raspberry Pi 5
+            Powered by <span>Hailo-8L AI Acceleration</span> &bull; YOLOv8s &bull; Raspberry Pi 5
         </footer>
     </div>
     
     <script>
         let streamActive = false;
+        
+        const typeIcons = {
+            'person': '&#128100;',
+            'car': '&#128663;',
+            'truck': '&#128666;',
+            'bus': '&#128652;',
+            'motorcycle': '&#127949;&#65039;',
+            'bicycle': '&#128690;',
+            'dog': '&#128021;',
+            'cat': '&#128008;'
+        };
+        const defaultIcon = '&#128230;';
         
         function onVideoLoad() {
             streamActive = true;
@@ -825,7 +815,6 @@ def dashboard():
             document.getElementById('liveText').textContent = 'Offline';
             updateSystemStatus(false);
             
-            // Retry connection after 3 seconds
             setTimeout(() => {
                 const feed = document.getElementById('videoFeed');
                 feed.src = '/video_feed?' + new Date().getTime();
@@ -845,14 +834,24 @@ def dashboard():
             }
         }
         
-        // Check stream status periodically
+        function resetCounters() {
+            if (confirm('Reset all counters? This clears the event history.')) {
+                fetch('/api/reset', { method: 'POST' })
+                    .then(r => r.json())
+                    .then(data => {
+                        if (data.success) {
+                            location.reload();
+                        }
+                    });
+            }
+        }
+        
         function checkStreamStatus() {
             fetch('/api/stream_status')
                 .then(r => r.json())
                 .then(data => {
                     if (data.active) {
                         if (!streamActive) {
-                            // Stream became active, refresh the feed
                             const feed = document.getElementById('videoFeed');
                             feed.src = '/video_feed?' + new Date().getTime();
                         }
@@ -861,14 +860,49 @@ def dashboard():
                 .catch(e => console.error('Status check error:', e));
         }
         
-        // Refresh stats every 30 seconds
-        function refreshStats() {
+        // Refresh live counts (total in frame + per-class breakdown)
+        function refreshLiveCounts() {
+            fetch('/api/live_counts')
+                .then(r => r.json())
+                .then(data => {
+                    // Update stat cards
+                    document.getElementById('statTotal').textContent = data.total || 0;
+                    document.getElementById('statPeople').textContent = data.live_counts['person'] || 0;
+                    
+                    // Update detection breakdown sidebar
+                    const list = document.getElementById('detectionList');
+                    const counts = data.live_counts || {};
+                    const entries = Object.entries(counts).sort((a, b) => b[1] - a[1]);
+                    
+                    let html = '';
+                    
+                    if (entries.length === 0) {
+                        html = '<div class="empty-state"><div class="icon">&#128269;</div><p>Nothing detected</p></div>';
+                    } else {
+                        entries.forEach(([objType, count]) => {
+                            const icon = typeIcons[objType] || defaultIcon;
+                            
+                            html += '<div class="detection-item">';
+                            html += '<div class="detection-name">';
+                            html += '<span class="detection-icon">' + icon + '</span>';
+                            html += objType;
+                            html += '</div>';
+                            html += '<div class="detection-count">' + count + '</div>';
+                            html += '</div>';
+                        });
+                    }
+                    
+                    list.innerHTML = html;
+                })
+                .catch(e => console.error('Live counts error:', e));
+        }
+        
+        // Refresh database stats (plates, alerts)
+        function refreshDbStats() {
             fetch('/api/stats')
                 .then(r => r.json())
                 .then(data => {
                     if (data.stats) {
-                        document.getElementById('statTotal').textContent = data.stats.total_events || 0;
-                        document.getElementById('statPeople').textContent = data.stats.people_detections || 0;
                         document.getElementById('statPlates').textContent = data.stats.unique_plates || 0;
                         document.getElementById('statAlerts').textContent = data.stats.blacklist_alerts || 0;
                     }
@@ -876,35 +910,55 @@ def dashboard():
                 .catch(e => console.error('Stats refresh error:', e));
         }
         
-        // Initial status check
+        // Refresh events table
+        function refreshEvents() {
+            fetch('/api/events')
+                .then(r => r.json())
+                .then(data => {
+                    if (data.events) {
+                        const tbody = document.getElementById('eventsBody');
+                        let html = '';
+                        
+                        data.events.forEach(event => {
+                            const ts = (event.timestamp || '').substring(0, 19);
+                            const etype = event.event_type || '-';
+                            const plate = event.plate_number || '-';
+                            const conf = Math.round((event.confidence || 0) * 100) + '%';
+                            
+                            let badgeClass = '';
+                            if (etype === 'person') badgeClass = 'person';
+                            else if (['car', 'truck', 'bus', 'motorcycle'].includes(etype)) badgeClass = 'vehicle';
+                            
+                            html += '<tr>';
+                            html += '<td class="timestamp">' + ts + '</td>';
+                            html += '<td><span class="type-badge ' + badgeClass + '">' + etype + '</span></td>';
+                            html += '<td class="plate">' + plate + '</td>';
+                            html += '<td class="confidence">' + conf + '</td>';
+                            html += '</tr>';
+                        });
+                        
+                        tbody.innerHTML = html;
+                    }
+                })
+                .catch(e => console.error('Events refresh error:', e));
+        }
+        
+        // Initial checks
         checkStreamStatus();
         
         // Periodic updates
-        setInterval(checkStreamStatus, 5000);
-        setInterval(refreshStats, 30000);
+        setInterval(checkStreamStatus, 5000);    // Stream status every 5 seconds
+        setInterval(refreshLiveCounts, 500);      // Live counts every 0.5 seconds
+        setInterval(refreshDbStats, 10000);       // Plates/alerts every 10 seconds
+        setInterval(refreshEvents, 5000);         // Events table every 5 seconds
     </script>
 </body>
 </html>
         '''
-        return render_template_string(html, stats=stats, events=events, plates=plates, 
-                                       type_counts=type_counts.most_common())
+        return render_template_string(html, stats=stats, events=events, plates=plates)
     except Exception as e:
         error_trace = traceback.format_exc()
         return f"<h1>Dashboard Error</h1><p>{str(e)}</p><pre>{error_trace}</pre>", 500
-
-
-@app.route('/api/stats')
-def api_stats():
-    """API endpoint for stats"""
-    try:
-        stats = db.get_statistics(24)
-        events = db.get_recent_events(hours=1, limit=10)
-        return jsonify({
-            'stats': stats,
-            'recent_events': events
-        })
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
 
 
 if __name__ == '__main__':
@@ -917,3 +971,4 @@ if __name__ == '__main__':
     print("Access at http://<pi-ip>:5000")
     print("=" * 50)
     app.run(host='0.0.0.0', port=5000, debug=False, threaded=True)
+

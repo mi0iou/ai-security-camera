@@ -7,15 +7,15 @@ Complete setup guide for running the AI Security Camera on Raspberry Pi 5 with H
 - Raspberry Pi 5 (8GB recommended)
 - Hailo-8L M.2 AI Accelerator
 - M.2 HAT for Pi 5 (e.g., Pimoroni NVMe Base or official Pi M.2 HAT+)
-- External SSD (recommended for better performance)
+- External SSD (recommended for better performance and longer storage retention)
 - IMX296 Global Shutter Camera (detection)
-- IMX477 HQ Camera (ANPR) - optional
+- IMX477 HQ Camera (ANPR) — optional
 - Good quality power supply (27W USB-C PD)
 
 ## Step 1: Flash the OS
 
 1. Download and install [Raspberry Pi Imager](https://www.raspberrypi.com/software/)
-2. Choose **Raspberry Pi OS (64-bit)** - Debian Trixie based
+2. Choose **Raspberry Pi OS (64-bit)** — Debian Trixie based
 3. Select your external SSD as the target
 4. Click the gear icon to pre-configure:
    - Set hostname (e.g., `aicamera`)
@@ -91,8 +91,8 @@ cd ai-security-camera
 
 You'll need a YOLOv8s model compiled for Hailo-8L (`yolov8s.hef`). Options:
 
-1. **Download pre-compiled** from Hailo Model Zoo (requires Hailo developer account)
-2. **Compile your own** using the Hailo Dataflow Compiler (see below)
+1. **Download pre-compiled** from [Hailo Model Zoo](https://github.com/hailo-ai/hailo_model_zoo) (requires Hailo developer account)
+2. **Compile your own** using the Hailo Dataflow Compiler (see Compiling Custom HEF Models below)
 
 Place the model in the `models/` directory:
 ```bash
@@ -107,10 +107,11 @@ cp config_example.yaml config.yaml
 nano config.yaml
 ```
 
-Edit settings for your setup:
-- Camera indices (check with `rpicam-hello --list-cameras`)
-- ntfy server/topic for notifications
-- Detection classes and confidence threshold
+Key settings to check:
+- **Camera indices** — verify with `rpicam-hello --list-cameras`
+- **ntfy server/topic** — for push notifications
+- **classes_to_detect** — `null` for all 80 COCO classes, or a list like `[0, 2, 5, 7]` (person, car, bus, truck)
+- **detection_log_cooldown** — seconds between database entries per class (prevents spam when objects sit in frame; default 30s)
 
 ## Step 9: Test the Cameras
 
@@ -127,13 +128,9 @@ rpicam-hello --camera 0 -t 5000
 rpicam-hello --camera 1 -t 5000
 ```
 
-### IMX296 Colour Check
+### IMX296 Colour Note
 
-The IMX296 should report `SRGGB10_CSI2P` mode. If you see `SBGGR10_CSI2P`, colours may be swapped - try updating your system:
-```bash
-sudo apt update && sudo apt full-upgrade -y
-sudo reboot
-```
+The IMX296 Global Shutter camera outputs BGR format despite requesting RGB888 on Debian Trixie. The `frame_buffer.py` handles this correctly by skipping colour conversion. If colours look wrong in the dashboard, ensure your system is fully updated.
 
 ## Step 10: Test Detection
 
@@ -147,7 +144,7 @@ In another terminal:
 python3 dashboard.py
 ```
 
-Open a browser to `http://<pi-ip>:5000` to see the dashboard.
+Open a browser to `http://<pi-ip>:5000` to see the dashboard with live video feed and detection overlays.
 
 ## Step 11: Setup Services
 
@@ -163,8 +160,8 @@ After=network.target
 
 [Service]
 Type=simple
-User=user
-WorkingDirectory=/home/user/ai_security_camera
+User=tom
+WorkingDirectory=/home/tom/ai_security_camera
 ExecStart=/usr/bin/python3 main.py
 Restart=always
 RestartSec=10
@@ -188,8 +185,8 @@ After=network.target security_camera.service
 
 [Service]
 Type=simple
-User=user
-WorkingDirectory=/home/user/ai_security_camera
+User=tom
+WorkingDirectory=/home/tom/ai_security_camera
 ExecStart=/usr/bin/python3 dashboard.py
 Restart=always
 RestartSec=10
@@ -201,7 +198,7 @@ Environment="PYTHONUNBUFFERED=1"
 WantedBy=multi-user.target
 ```
 
-> **Note:** Change `User=user` and `WorkingDirectory` to match your username and project path.
+> **Note:** Change `User=tom` and `WorkingDirectory` to match your username and project path.
 
 Enable and start:
 ```bash
@@ -215,7 +212,7 @@ sudo systemctl start security_camera camera_dashboard
 For push notifications, you can either use the public ntfy.sh service or run your own server.
 
 ### Option A: Use public ntfy.sh
-Just set your config to use `https://ntfy.sh` and choose a unique topic name.
+Set your config to use `https://ntfy.sh` and choose a unique topic name.
 
 ### Option B: Run local ntfy server
 ```bash
@@ -226,6 +223,8 @@ sudo systemctl start ntfy
 
 Then use `http://localhost` as your ntfy server in config.yaml.
 
+Install the ntfy app on your phone (available on [F-Droid](https://f-droid.org/packages/io.heckel.ntfy/) and Google Play) and subscribe to your topic for push notifications.
+
 ## Compiling Custom HEF Models
 
 If you need to compile your own models:
@@ -234,7 +233,7 @@ If you need to compile your own models:
 2. Install the Hailo Software Suite from the [Hailo Developer Zone](https://hailo.ai/developer-zone/)
 3. Convert your model: ONNX → HAR → HEF
 
-This is complex and resource-intensive. Basic steps:
+Basic steps:
 ```bash
 # On your x86_64 machine with Hailo DFC installed
 hailo parser onnx yolov8s.onnx
@@ -281,7 +280,14 @@ journalctl -u security_camera -f
 ```
 
 ### Colours look wrong on IMX296
-The Global Shutter camera has known colour handling quirks. Ensure your system is fully updated. The frame_buffer.py handles the BGR output format correctly.
+The Global Shutter camera outputs BGR on Debian Trixie despite requesting RGB888. The frame_buffer.py handles this by skipping the colour swap. Ensure your system is fully updated.
+
+### Database growing too large
+Increase `detection_log_cooldown` in config.yaml (default 30 seconds) to reduce how often the same object type is logged. Adjust `retention_days` to control how long events are kept. The database auto-cleans old records.
+
+## Development Environment
+
+This project works well with VS Code and the Remote-SSH extension for editing files directly on the Pi.
 
 ## System Info Reference
 

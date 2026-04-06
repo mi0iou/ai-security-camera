@@ -66,6 +66,8 @@ class DatabaseManager:
                          ON events(timestamp)''')
             c.execute('''CREATE INDEX IF NOT EXISTS idx_events_plate 
                          ON events(plate_number)''')
+            c.execute('''CREATE INDEX IF NOT EXISTS idx_events_type 
+                         ON events(event_type)''')
             c.execute('''CREATE INDEX IF NOT EXISTS idx_people_timestamp 
                          ON people_log(timestamp)''')
             
@@ -301,8 +303,8 @@ class DatabaseManager:
                          (cutoff,))
                 stats['unique_plates'] = c.fetchone()[0]
                 
-                # People detections
-                c.execute('SELECT COUNT(*) FROM people_log WHERE timestamp > ?', 
+                # People detections (count from events table where type is person)
+                c.execute("SELECT COUNT(*) FROM events WHERE timestamp > ? AND event_type = 'person'",
                          (cutoff,))
                 stats['people_detections'] = c.fetchone()[0]
                 
@@ -320,6 +322,46 @@ class DatabaseManager:
             except Exception as e:
                 self.logger.error(f"Error getting statistics: {e}")
                 return {}
+    
+    def get_detection_breakdown(self, hours=24):
+        """Get detection counts grouped by type using SQL for accuracy"""
+        with self.lock:
+            try:
+                conn = self._get_connection()
+                c = conn.cursor()
+                
+                cutoff = (datetime.now() - timedelta(hours=hours)).isoformat()
+                
+                c.execute('''SELECT event_type, COUNT(*) as count 
+                            FROM events 
+                            WHERE timestamp > ? 
+                            GROUP BY event_type 
+                            ORDER BY count DESC''', (cutoff,))
+                
+                rows = c.fetchall()
+                conn.close()
+                
+                return [(row['event_type'], row['count']) for row in rows]
+                
+            except Exception as e:
+                self.logger.error(f"Error getting detection breakdown: {e}")
+                return []
+    
+    def reset_statistics(self):
+        """Clear all events and people logs"""
+        with self.lock:
+            try:
+                conn = self._get_connection()
+                c = conn.cursor()
+                c.execute('DELETE FROM events')
+                c.execute('DELETE FROM people_log')
+                conn.commit()
+                conn.close()
+                self.logger.info("Statistics reset")
+                return True
+            except Exception as e:
+                self.logger.error(f"Error resetting statistics: {e}")
+                return False
     
     def cleanup_old_records(self, retention_days=30):
         """Remove old records based on retention policy"""
@@ -348,3 +390,4 @@ class DatabaseManager:
             except Exception as e:
                 self.logger.error(f"Error during cleanup: {e}")
                 return False
+
