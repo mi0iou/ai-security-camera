@@ -86,21 +86,18 @@ class AlertManager:
             
             # If image should be included
             if self.send_images and image_path and Path(image_path).exists():
-                # Send image as attachment
+                # ntfy: send image as request body, message goes in header
                 with open(image_path, 'rb') as img_file:
                     img_data = img_file.read()
-                    img_b64 = base64.b64encode(img_data).decode()
                 
-                # ntfy supports base64 images in message
-                headers["Attach"] = f"data:image/jpeg;base64,{img_b64[:100]}..."
+                headers["Message"] = message.replace('\n', ' | ')
                 headers["Filename"] = Path(image_path).name
                 
-                # For full image support, send as multipart
-                response = requests.post(
+                response = requests.put(
                     url,
-                    data=message,
+                    data=img_data,
                     headers=headers,
-                    timeout=10
+                    timeout=30
                 )
             else:
                 # Simple text notification

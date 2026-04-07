@@ -1,77 +1,66 @@
-# AI Security Camera Configuration
-# Copy this to config.yaml and adjust for your setup
+# AI Security Camera - Example Configuration
+# Copy to config.yaml and edit for your setup:
+#   cp config_example.yaml config.yaml
 
-# Camera Settings
 cameras:
   detection:
-    index: 0                    # Camera index for detection (check with rpicam-hello --list-cameras)
-    resolution: [1920, 1080]    # Capture resolution
+    index: 0                        # Camera index for detection (check with rpicam-hello --list-cameras)
+    resolution: [1920, 1080]        # Full HD
     framerate: 30
-    type: "imx296"              # Camera type (for reference)
+    type: "imx296"                  # IMX296 Global Shutter recommended
+  
   anpr:
-    index: 1                    # Camera index for ANPR (if using dual cameras)
-    resolution: [4056, 3040]    # Higher res for plate reading
+    index: 1                        # Camera index for ANPR
+    resolution: [4056, 3040]        # IMX477 max resolution for plate readability
     framerate: 15
-    type: "imx477"
+    type: "imx477"                  # IMX477 HQ Camera with telephoto lens recommended
 
-# Detection Settings
 detection:
-  yolo_model: "yolov8s.pt"                     # Fallback YOLO model (CPU)
-  confidence_threshold: 0.5                    # Minimum confidence (0.0-1.0)
-  classes_to_detect: null                      # null = all 80 COCO classes, or list like [0, 2, 5, 7]
-  # Common COCO classes:
-  #   0: person, 1: bicycle, 2: car, 3: motorcycle
-  #   5: bus, 7: truck, 14: bird, 15: cat, 16: dog
-  use_hailo: true                              # Use Hailo-8L accelerator
-  hailo_model_path: "models/yolov8s.hef"       # Path to compiled Hailo model
+  yolo_model: "yolov8n.pt"         # CPU fallback model (used if Hailo unavailable)
+  confidence_threshold: 0.5
+  classes_to_detect: null           # null = all 80 COCO classes, or list e.g. [0, 2, 5, 7]
+  use_hailo: true
+  hailo_model_path: "models/yolov8s.hef"
 
-# ANPR Settings (Automatic Number Plate Recognition)
 anpr:
-  enabled: true                 # Enable/disable ANPR processing
-  method: "tesseract"           # OCR method: "tesseract" or "easyocr"
-  trigger_on_vehicle: true      # Trigger ANPR when vehicle detected
-  min_confidence: 0.6           # Minimum OCR confidence
-  plate_region: "uk"            # Plate format: "uk", "us", "eu"
+  enabled: true
+  method: "easyocr"                 # EasyOCR recommended (alternatives: "tesseract")
+  trigger_on_vehicle: true
+  min_confidence: 0.5
+  plate_region: "uk"                # Plate format: "uk", "us", or "eu"
 
-# Database Settings
 database:
-  path: "database/security.db"  # SQLite database path
-  log_all_detections: true      # Log every detection event
-  retention_days: 30            # Auto-delete events older than this
+  path: "database/security.db"
+  log_all_detections: true
+  retention_days: 90                # Auto-clean records older than this
 
-# Alert Settings
 alerts:
-  ntfy_server: "https://ntfy.sh"              # ntfy server URL (or http://localhost for local)
-  ntfy_topic: "your-secret-topic-change-this" # Unique topic name
-  send_images: true                           # Attach images to alerts
-  cooldown_seconds: 30                        # Minimum seconds between alerts for same plate/person
+  ntfy_server: "http://localhost"   # Local ntfy server, or https://ntfy.sh for public
+  ntfy_topic: "security-camera"     # Choose a unique topic name
+  send_images: false                # Set true once ntfy attachment config is done
   
   alert_on:
-    unknown_plate: true         # Alert on unrecognised plates
-    blacklisted_plate: true     # Alert on blacklisted plates (high priority)
-    known_plate: false          # Alert on known/whitelisted plates
-    person_detected: false      # Alert when person detected
+    unknown_plate: true
+    blacklisted_plate: true
+    known_plate: false
+    person_detected: true
+    
+  cooldown_seconds: 30              # Min seconds between alerts for same plate/person
 
-# Storage Settings
 storage:
-  save_images: true             # Enable image saving
-  image_path: "images/"         # Directory for saved images
-  max_storage_mb: 10000         # Max storage in MB (10GB default)
-  save_detection_frames: false  # Save frames with detections (generates many files)
-  save_anpr_frames: true        # Save ANPR capture frames
+  save_images: true
+  image_path: "images"
+  max_storage_mb: 100000            # 100GB
+  save_detection_frames: false      # Save a frame for each detection event?
+  save_anpr_frames: true            # Save ANPR capture frames?
 
-# Performance Tuning
 performance:
-  detection_interval: 0.05      # Seconds between detections (0.05 = 20 FPS target)
-  detection_log_cooldown: 30    # Seconds between logging same object type to database
-                                # Prevents DB spam when objects sit in frame
-                                # Live feed still shows all detections regardless
-                                # Set to 0 to log every detection
-  anpr_timeout: 5               # Seconds to wait for ANPR processing
-  max_queue_size: 10            # Max frames in ANPR queue
+  detection_interval: 0.05          # Target ~20 FPS
+  detection_log_cooldown: 30        # Seconds between DB logs per class (0 = log every detection)
+  anpr_timeout: 5
+  max_queue_size: 20
 
-# Logging
 logging:
-  level: "INFO"                 # Log level: DEBUG, INFO, WARNING, ERROR
+  level: "INFO"
   file: "logs/security_camera.log"
-  console: true                 # Also output to console
+  console: true

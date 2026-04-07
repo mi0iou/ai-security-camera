@@ -323,6 +323,40 @@ class DatabaseManager:
                 self.logger.error(f"Error getting statistics: {e}")
                 return {}
     
+    def get_detected_plates(self, hours=24, limit=50):
+        """Get plates detected in the last N hours, most recent first"""
+        with self.lock:
+            try:
+                conn = self._get_connection()
+                c = conn.cursor()
+                
+                cutoff = (datetime.now() - timedelta(hours=hours)).isoformat()
+                
+                # Get distinct plates with latest timestamp, count, best confidence
+                # and whether they're known/blacklisted
+                c.execute('''SELECT 
+                                e.plate_number,
+                                MAX(e.timestamp) as last_seen,
+                                COUNT(*) as times_seen,
+                                MAX(e.confidence) as best_confidence,
+                                k.owner_name,
+                                k.alert_type
+                            FROM events e
+                            LEFT JOIN known_plates k ON e.plate_number = k.plate_number
+                            WHERE e.timestamp > ? AND e.plate_number IS NOT NULL
+                            GROUP BY e.plate_number
+                            ORDER BY last_seen DESC
+                            LIMIT ?''', (cutoff, limit))
+                
+                rows = c.fetchall()
+                conn.close()
+                
+                return [dict(row) for row in rows]
+                
+            except Exception as e:
+                self.logger.error(f"Error getting detected plates: {e}")
+                return []
+    
     def get_detection_breakdown(self, hours=24):
         """Get detection counts grouped by type using SQL for accuracy"""
         with self.lock:
@@ -390,4 +424,3 @@ class DatabaseManager:
             except Exception as e:
                 self.logger.error(f"Error during cleanup: {e}")
                 return False
-

@@ -13,12 +13,14 @@ picamera2>=0.3.12
 # YOLO (fallback if Hailo unavailable)
 ultralytics>=8.0.0
 
+# ANPR — EasyOCR for number plate recognition
+easyocr>=1.7.0
+
+# CLI plate management tool
+tabulate>=0.9.0
+
 # Hailo Runtime - install separately via Hailo's instructions
 # https://hailo.ai/developer-zone/
 # hailo-platform
 
 # Database (sqlite3 is included in Python standard library)
-
-# Optional: ANPR
-# easyocr>=1.7.0
-# paddleocr>=2.7.0

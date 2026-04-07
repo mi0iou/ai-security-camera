@@ -95,12 +95,21 @@ def api_events():
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/api/detected_plates')
+def api_detected_plates():
+    """API endpoint for plates detected in last 24h"""
+    try:
+        plates = db.get_detected_plates(hours=24, limit=50)
+        return jsonify({'plates': plates})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/')
 def dashboard():
     try:
         stats = db.get_statistics(24)
         events = db.get_recent_events(hours=24, limit=50)
-        plates = db.get_all_known_plates()
         
         html = '''
 <!DOCTYPE html>
@@ -752,28 +761,15 @@ def dashboard():
                 <div class="card">
                     <div class="section-header">
                         <div class="section-title">
-                            <span>&#128663;</span> Known Plates
+                            <span>&#128663;</span> Detected Plates
                         </div>
+                        <span style="color: var(--text-secondary); font-size: 0.85rem;">Last 24h</span>
                     </div>
-                    <div class="plates-list">
-                        {% if plates %}
-                            {% for plate in plates %}
-                            <div class="plate-item {{ 'blacklist' if plate.get('alert_type') == 'blacklist' else '' }}">
-                                <div class="plate-number">{{ plate.get('plate_number', '') }}</div>
-                                <div class="plate-info">
-                                    <div class="plate-owner">{{ plate.get('owner_name', '') }}</div>
-                                    <div class="plate-type {{ 'blacklist' if plate.get('alert_type') == 'blacklist' else '' }}">
-                                        {{ plate.get('alert_type', 'known') }}
-                                    </div>
-                                </div>
-                            </div>
-                            {% endfor %}
-                        {% else %}
+                    <div class="plates-list" id="detectedPlatesList">
                         <div class="empty-state">
                             <div class="icon">&#128665;</div>
-                            <p>No plates registered</p>
+                            <p>No plates detected yet</p>
                         </div>
-                        {% endif %}
                     </div>
                 </div>
             </div>
@@ -943,19 +939,60 @@ def dashboard():
                 .catch(e => console.error('Events refresh error:', e));
         }
         
+        // Refresh detected plates sidebar
+        function refreshDetectedPlates() {
+            fetch('/api/detected_plates')
+                .then(r => r.json())
+                .then(data => {
+                    const list = document.getElementById('detectedPlatesList');
+                    const plates = data.plates || [];
+                    
+                    if (plates.length === 0) {
+                        list.innerHTML = '<div class="empty-state"><div class="icon">&#128665;</div><p>No plates detected yet</p></div>';
+                        return;
+                    }
+                    
+                    let html = '';
+                    plates.forEach(p => {
+                        const isBlacklist = p.alert_type === 'blacklist';
+                        const lastSeen = (p.last_seen || '').substring(11, 19);
+                        const conf = Math.round((p.best_confidence || 0) * 100) + '%';
+                        const status = p.alert_type ? p.alert_type : 'unknown';
+                        
+                        html += '<div class="plate-item ' + (isBlacklist ? 'blacklist' : '') + '">';
+                        html += '<div>';
+                        html += '<div class="plate-number">' + p.plate_number + '</div>';
+                        html += '<div style="font-size:0.75rem;color:var(--text-secondary);margin-top:2px">' + lastSeen + ' &bull; ' + conf + ' &bull; x' + p.times_seen + '</div>';
+                        html += '</div>';
+                        html += '<div class="plate-info">';
+                        if (p.owner_name) {
+                            html += '<div class="plate-owner">' + p.owner_name + '</div>';
+                        }
+                        html += '<div class="plate-type ' + (isBlacklist ? 'blacklist' : '') + '">' + status + '</div>';
+                        html += '</div>';
+                        html += '</div>';
+                    });
+                    
+                    list.innerHTML = html;
+                })
+                .catch(e => console.error('Detected plates error:', e));
+        }
+        
         // Initial checks
         checkStreamStatus();
+        refreshDetectedPlates();
         
         // Periodic updates
         setInterval(checkStreamStatus, 5000);    // Stream status every 5 seconds
         setInterval(refreshLiveCounts, 500);      // Live counts every 0.5 seconds
         setInterval(refreshDbStats, 10000);       // Plates/alerts every 10 seconds
         setInterval(refreshEvents, 5000);         // Events table every 5 seconds
+        setInterval(refreshDetectedPlates, 10000); // Detected plates every 10 seconds
     </script>
 </body>
 </html>
         '''
-        return render_template_string(html, stats=stats, events=events, plates=plates)
+        return render_template_string(html, stats=stats, events=events)
     except Exception as e:
         error_trace = traceback.format_exc()
         return f"<h1>Dashboard Error</h1><p>{str(e)}</p><pre>{error_trace}</pre>", 500
@@ -971,4 +1008,3 @@ if __name__ == '__main__':
     print("Access at http://<pi-ip>:5000")
     print("=" * 50)
     app.run(host='0.0.0.0', port=5000, debug=False, threaded=True)
-

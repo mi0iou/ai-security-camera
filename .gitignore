@@ -65,4 +65,4 @@ docs/_build/
 
 # Model files (large, users should obtain their own)
 # Uncomment the next line if you don't want to include the .hef model
-# models/*.hef
+models/*.hef

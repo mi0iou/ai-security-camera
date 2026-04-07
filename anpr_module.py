@@ -1,28 +1,37 @@
 #!/usr/bin/env python3
 """
 ANPR (Automatic Number Plate Recognition) Module
-Supports EasyOCR and Tesseract
+Uses EasyOCR for reliable text detection in natural scenes.
+
+Strategy:
+  1. Crop to vehicle region using mapped bounding box (from detection camera)
+  2. Take the lower portion only (plates are on bumpers, not roofs)
+  3. Cap the crop at ~800px wide for fast OCR (~2-5s on Pi 5 CPU)
+  4. EasyOCR finds and reads text automatically
+  5. Validate against regional plate patterns
 """
 
 import cv2
 import numpy as np
 import re
 import logging
+import time
+
 
 class ANPRProcessor:
     def __init__(self, config):
         self.config = config
         self.logger = logging.getLogger('ANPR')
-        self.method = config['method']
+        self.method = config.get('method', 'easyocr')
         
-        # Initialize OCR engine
+        # Initialize EasyOCR (preferred) or Tesseract (fallback)
         if self.method == 'easyocr':
             try:
                 import easyocr
                 self.reader = easyocr.Reader(['en'], gpu=False)
                 self.logger.info("EasyOCR initialized")
             except ImportError:
-                self.logger.error("EasyOCR not installed. Install with: pip install easyocr")
+                self.logger.error("EasyOCR not installed. Install with: pip install easyocr --break-system-packages")
                 raise
         elif self.method == 'tesseract':
             try:
@@ -30,208 +39,189 @@ class ANPRProcessor:
                 self.reader = pytesseract
                 self.logger.info("Tesseract initialized")
             except ImportError:
-                self.logger.error("pytesseract not installed. Install with: pip install pytesseract")
+                self.logger.error("pytesseract not installed")
                 raise
         else:
             raise ValueError(f"Unknown ANPR method: {self.method}")
         
         # Plate patterns by region
         self.plate_patterns = {
-            'uk': r'^[A-Z]{2}[0-9]{2}\s?[A-Z]{3}$',  # UK format: AB12 CDE
-            'us': r'^[A-Z0-9]{2,7}$',  # US format: varies by state
-            'eu': r'^[A-Z]{1,3}[-\s]?[0-9]{1,4}[-\s]?[A-Z]{1,3}$',  # EU format
+            'uk': r'^([A-Z]{2}[0-9]{2}\s?[A-Z]{3}|[A-Z]{2,3}\s?[0-9]{2,4})$',
+            'us': r'^[A-Z0-9]{2,7}$',
+            'eu': r'^[A-Z]{1,3}[-\s]?[0-9]{1,4}[-\s]?[A-Z]{1,3}$',
         }
-    
-    def preprocess_image(self, image):
-        """Preprocess image for better OCR results"""
-        # Convert to grayscale
-        gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
         
-        # Apply bilateral filter to reduce noise while keeping edges sharp
-        denoised = cv2.bilateralFilter(gray, 11, 17, 17)
-        
-        # Apply adaptive thresholding
-        thresh = cv2.adaptiveThreshold(
-            denoised, 255, 
-            cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
-            cv2.THRESH_BINARY, 11, 2
-        )
-        
-        # Optional: Apply morphological operations
-        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
-        morph = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
-        
-        return morph
-    
-    def detect_plate_region(self, image):
-        """
-        Detect potential plate regions using contours
-        Returns list of cropped plate regions
-        """
-        gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
-        blur = cv2.bilateralFilter(gray, 11, 17, 17)
-        
-        # Edge detection
-        edges = cv2.Canny(blur, 30, 200)
-        
-        # Find contours
-        contours, _ = cv2.findContours(edges.copy(), cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-        contours = sorted(contours, key=cv2.contourArea, reverse=True)[:10]
-        
-        plate_regions = []
-        
-        for contour in contours:
-            # Approximate the contour
-            peri = cv2.arcLength(contour, True)
-            approx = cv2.approxPolyDP(contour, 0.018 * peri, True)
-            
-            # Check if contour has 4 points (potential rectangle)
-            if len(approx) == 4:
-                x, y, w, h = cv2.boundingRect(approx)
-                
-                # Check aspect ratio (typical plate ratio is 2:1 to 5:1)
-                aspect_ratio = w / float(h)
-                if 2.0 <= aspect_ratio <= 5.0 and w > 50 and h > 15:
-                    # Extract region
-                    plate_region = image[y:y+h, x:x+w]
-                    plate_regions.append({
-                        'region': plate_region,
-                        'bbox': (x, y, w, h),
-                        'aspect_ratio': aspect_ratio
-                    })
-        
-        return plate_regions
-    
-    def read_plate_easyocr(self, image):
-        """Read plate using EasyOCR"""
-        try:
-            # Preprocess
-            processed = self.preprocess_image(image)
-            
-            # Run OCR
-            results = self.reader.readtext(processed)
-            
-            if not results:
-                return None
-            
-            # Get best result
-            best_result = max(results, key=lambda x: x[2])  # Sort by confidence
-            text = best_result[1]
-            confidence = best_result[2]
-            
-            # Clean text
-            text = self.clean_plate_text(text)
-            
-            # Validate against pattern
-            if self.validate_plate(text):
-                return {
-                    'plate': text,
-                    'confidence': confidence,
-                    'raw_text': best_result[1]
-                }
-            
-            return None
-            
-        except Exception as e:
-            self.logger.error(f"EasyOCR error: {e}")
-            return None
-    
-    def read_plate_tesseract(self, image):
-        """Read plate using Tesseract"""
-        try:
-            # Preprocess
-            processed = self.preprocess_image(image)
-            
-            # Configure Tesseract for plate recognition
-            custom_config = r'--oem 3 --psm 7 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
-            
-            # Run OCR
-            text = self.reader.image_to_string(processed, config=custom_config)
-            
-            # Get confidence (if available)
-            data = self.reader.image_to_data(processed, config=custom_config, output_type=self.reader.Output.DICT)
-            confidences = [int(conf) for conf in data['conf'] if conf != '-1']
-            avg_confidence = sum(confidences) / len(confidences) / 100 if confidences else 0
-            
-            # Clean text
-            text = self.clean_plate_text(text)
-            
-            # Validate against pattern
-            if self.validate_plate(text):
-                return {
-                    'plate': text,
-                    'confidence': avg_confidence,
-                    'raw_text': text
-                }
-            
-            return None
-            
-        except Exception as e:
-            self.logger.error(f"Tesseract error: {e}")
-            return None
+        # Max width for OCR input — controls speed/accuracy tradeoff
+        # 800px is fast (~2-5s on Pi 5) while keeping plate text readable
+        self.max_ocr_width = 800
     
     def clean_plate_text(self, text):
         """Clean and format plate text"""
-        # Remove special characters except spaces and hyphens
         text = re.sub(r'[^A-Z0-9\s-]', '', text.upper())
-        
-        # Remove extra spaces
         text = ' '.join(text.split())
-        
-        # Common OCR mistakes
-        replacements = {
-            'O': '0',  # O to 0 in number positions
-            'I': '1',  # I to 1
-            'Z': '2',  # Z to 2
-            'S': '5',  # S to 5
-            'B': '8',  # B to 8
-        }
-        
-        # Apply replacements intelligently based on position
-        # This is simplified - you may want region-specific logic
-        
         return text.strip()
     
     def validate_plate(self, text):
         """Validate plate against regional pattern"""
-        if not text or len(text) < 2:
+        if not text or len(text) < 4:
             return False
         
         region = self.config.get('plate_region', 'uk')
         pattern = self.plate_patterns.get(region)
         
         if not pattern:
-            # If no pattern, accept any alphanumeric 2-10 chars
-            return bool(re.match(r'^[A-Z0-9\s-]{2,10}$', text))
+            return bool(re.match(r'^[A-Z0-9\s-]{4,10}$', text))
         
         return bool(re.match(pattern, text))
     
-    def read_plate(self, image):
+    def _resize_for_ocr(self, image):
+        """Resize image so the longest edge is max_ocr_width, if needed"""
+        h, w = image.shape[:2]
+        if w <= self.max_ocr_width:
+            return image
+        
+        scale = self.max_ocr_width / w
+        new_w = self.max_ocr_width
+        new_h = int(h * scale)
+        resized = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_AREA)
+        self.logger.debug(f"Resized {w}x{h} -> {new_w}x{new_h} for OCR")
+        return resized
+    
+    def _run_easyocr(self, image):
         """
-        Main method to read plate from image
-        Tries multiple approaches for best results
+        Run EasyOCR on image.
+        Returns list of (text, confidence) tuples for all detected text.
         """
-        results = []
-        
-        # Try on full image first
-        if self.method == 'easyocr':
-            result = self.read_plate_easyocr(image)
-        else:
-            result = self.read_plate_tesseract(image)
-        
-        if result and result['confidence'] >= self.config['min_confidence']:
-            return result
-        
-        # If failed, try detecting plate regions first
-        plate_regions = self.detect_plate_region(image)
-        
-        for region_data in plate_regions[:3]:  # Try top 3 regions
-            if self.method == 'easyocr':
-                result = self.read_plate_easyocr(region_data['region'])
-            else:
-                result = self.read_plate_tesseract(region_data['region'])
+        try:
+            results = self.reader.readtext(image)
+            return [(r[1], r[2]) for r in results if r[2] > 0.1]
+        except Exception as e:
+            self.logger.error(f"EasyOCR error: {e}")
+            return []
+    
+    def _run_tesseract(self, image):
+        """Fallback: run Tesseract on image"""
+        try:
+            gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY) if len(image.shape) == 3 else image
+            config = '--oem 3 --psm 11 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 '
+            data = self.reader.image_to_data(gray, config=config,
+                                             output_type=self.reader.Output.DICT)
             
-            if result and result['confidence'] >= self.config['min_confidence']:
-                return result
+            results = []
+            words = []
+            for i, word in enumerate(data['text']):
+                word = word.strip()
+                if not word:
+                    continue
+                conf = int(data['conf'][i]) if str(data['conf'][i]) != '-1' else 0
+                if conf > 0:
+                    words.append((word, conf / 100.0))
+                    if len(word) >= 4:
+                        results.append((word, conf / 100.0))
+            
+            # Also try combining consecutive word pairs
+            for i in range(len(words) - 1):
+                for sep in ['', ' ']:
+                    combined = words[i][0] + sep + words[i+1][0]
+                    avg_conf = (words[i][1] + words[i+1][1]) / 2
+                    results.append((combined, avg_conf))
+            
+            return results
+        except Exception as e:
+            self.logger.error(f"Tesseract error: {e}")
+            return []
+    
+    def read_plate(self, image, vehicle_bbox=None):
+        """
+        Main method to read a number plate from an image.
         
-        return None
+        Args:
+            image: Full camera frame (RGB)
+            vehicle_bbox: Optional [x1, y1, x2, y2] in this camera's coordinates.
+                         Dramatically speeds up processing by cropping first.
+        
+        Returns:
+            dict with 'plate', 'confidence', 'raw_text' or None
+        """
+        img_h, img_w = image.shape[:2]
+        t_start = time.time()
+        
+        # Step 1: Crop to vehicle region if bbox provided
+        if vehicle_bbox is not None:
+            vx1, vy1, vx2, vy2 = vehicle_bbox
+            vh = vy2 - vy1
+            vw = vx2 - vx1
+            
+            # Take lower 50% of vehicle (where plates are) with padding
+            crop_y1 = max(0, vy1 + int(vh * 0.4))
+            crop_y2 = min(img_h, vy2 + int(vh * 0.15))
+            crop_x1 = max(0, vx1 - int(vw * 0.1))
+            crop_x2 = min(img_w, vx2 + int(vw * 0.1))
+            
+            search_image = image[crop_y1:crop_y2, crop_x1:crop_x2]
+            
+            if search_image.size == 0:
+                self.logger.warning("Vehicle crop was empty, using full frame")
+                search_image = image
+            else:
+                self.logger.debug(f"Vehicle crop: {search_image.shape[1]}x{search_image.shape[0]} "
+                                 f"from {img_w}x{img_h}")
+        else:
+            # No bbox — use centre-lower area (likely plate position with telephoto)
+            cx, cy = img_w // 2, int(img_h * 0.6)
+            crop_w, crop_h = img_w // 3, img_h // 6
+            search_image = image[
+                max(0, cy - crop_h):min(img_h, cy + crop_h),
+                max(0, cx - crop_w):min(img_w, cx + crop_w)
+            ]
+            self.logger.debug(f"Centre crop: {search_image.shape[1]}x{search_image.shape[0]}")
+        
+        # Step 2: Resize for fast OCR
+        ocr_image = self._resize_for_ocr(search_image)
+        
+        # Step 3: Run OCR
+        if self.method == 'easyocr':
+            ocr_results = self._run_easyocr(ocr_image)
+        else:
+            ocr_results = self._run_tesseract(ocr_image)
+        
+        elapsed = time.time() - t_start
+        self.logger.debug(f"OCR took {elapsed:.1f}s, found {len(ocr_results)} text regions")
+        
+        # Step 4: Find best plate match
+        best_result = None
+        best_conf = 0
+        
+        for raw_text, conf in ocr_results:
+            cleaned = self.clean_plate_text(raw_text)
+            
+            if self.validate_plate(cleaned) and conf > best_conf:
+                self.logger.info(f"Plate read: '{cleaned}' conf={conf:.2f} ({elapsed:.1f}s)")
+                best_result = {
+                    'plate': cleaned,
+                    'confidence': conf,
+                    'raw_text': raw_text
+                }
+                best_conf = conf
+        
+        # Also try combining adjacent results (handles split reads)
+        if not best_result and len(ocr_results) >= 2:
+            for i in range(len(ocr_results) - 1):
+                for sep in ['', ' ']:
+                    combined = ocr_results[i][0] + sep + ocr_results[i+1][0]
+                    avg_conf = (ocr_results[i][1] + ocr_results[i+1][1]) / 2
+                    cleaned = self.clean_plate_text(combined)
+                    
+                    if self.validate_plate(cleaned) and avg_conf > best_conf:
+                        self.logger.info(f"Combined plate: '{cleaned}' conf={avg_conf:.2f} ({elapsed:.1f}s)")
+                        best_result = {
+                            'plate': cleaned,
+                            'confidence': avg_conf,
+                            'raw_text': combined
+                        }
+                        best_conf = avg_conf
+        
+        if not best_result:
+            self.logger.debug(f"No plate detected ({elapsed:.1f}s)")
+        
+        return best_result

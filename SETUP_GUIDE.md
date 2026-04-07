@@ -8,8 +8,8 @@ Complete setup guide for running the AI Security Camera on Raspberry Pi 5 with H
 - Hailo-8L M.2 AI Accelerator
 - M.2 HAT for Pi 5 (e.g., Pimoroni NVMe Base or official Pi M.2 HAT+)
 - External SSD (recommended for better performance and longer storage retention)
-- IMX296 Global Shutter Camera (detection)
-- IMX477 HQ Camera (ANPR) — optional
+- IMX296 Global Shutter Camera + 6mm lens (detection, ~55° FOV)
+- IMX477 HQ Camera + 16mm lens (ANPR, ~22° FOV) — optional
 - Good quality power supply (27W USB-C PD)
 
 ## Step 1: Flash the OS
@@ -76,14 +76,16 @@ You should see your Hailo-8L device info including firmware version and serial n
 sudo apt install -y python3-pip python3-opencv python3-picamera2
 
 # Python packages (note: --break-system-packages required on Trixie)
-pip install flask pyyaml requests ultralytics --break-system-packages
+pip install -r requirements.txt --break-system-packages
 ```
+
+This installs Flask, PyYAML, Ultralytics (YOLO), EasyOCR (for ANPR), and other dependencies. EasyOCR will download its English text recognition model (~100MB) on first run.
 
 ## Step 6: Clone the Project
 
 ```bash
 cd ~
-git clone https://github.com/mi0iou/ai-security-camera.git
+git clone https://github.com/yourusername/ai-security-camera.git
 cd ai-security-camera
 ```
 
@@ -111,6 +113,7 @@ Key settings to check:
 - **Camera indices** — verify with `rpicam-hello --list-cameras`
 - **ntfy server/topic** — for push notifications
 - **classes_to_detect** — `null` for all 80 COCO classes, or a list like `[0, 2, 5, 7]` (person, car, bus, truck)
+- **anpr.plate_region** — set to `"uk"`, `"us"`, or `"eu"` to match your local plate format
 - **detection_log_cooldown** — seconds between database entries per class (prevents spam when objects sit in frame; default 30s)
 
 ## Step 9: Test the Cameras
@@ -127,6 +130,16 @@ rpicam-hello --camera 0 -t 5000
 # Test ANPR camera (if using dual cameras)
 rpicam-hello --camera 1 -t 5000
 ```
+
+### Dual Camera Test Viewer
+
+For checking camera alignment, focus, and colour accuracy between the two cameras:
+
+```bash
+python3 dual_camera_test.py
+```
+
+Open `http://<pi-ip>:5001` in a browser. Both feeds are shown side by side with crosshairs for alignment checking. The detection camera's wider FOV (~55°) should fully contain the ANPR camera's narrower FOV (~22°). Mount both cameras close together, pointing in the same direction.
 
 ### IMX296 Colour Note
 
@@ -145,6 +158,8 @@ python3 dashboard.py
 ```
 
 Open a browser to `http://<pi-ip>:5000` to see the dashboard with live video feed and detection overlays.
+
+If ANPR is enabled, you should see plate reads in the log when vehicles are detected. EasyOCR takes approximately 10 seconds per read on the Pi 5 CPU — this runs on a separate thread and does not block detection.
 
 ## Step 11: Setup Services
 
@@ -225,6 +240,26 @@ Then use `http://localhost` as your ntfy server in config.yaml.
 
 Install the ntfy app on your phone (available on [F-Droid](https://f-droid.org/packages/io.heckel.ntfy/) and Google Play) and subscribe to your topic for push notifications.
 
+## Step 13: Manage Known Plates (Optional)
+
+Use the CLI tool to add known and blacklisted plates:
+
+```bash
+# Add a known plate
+python3 manage_plates.py add "ABC 1234" "John Smith" --vehicle "Blue Ford Focus" --type known
+
+# Add a blacklisted plate
+python3 manage_plates.py add "XYZ 9999" "Banned Vehicle" --type blacklist
+
+# List all plates
+python3 manage_plates.py list
+
+# Import from CSV
+python3 manage_plates.py import plates.csv
+```
+
+Known plates are shown with their owner name on the dashboard. Blacklisted plates trigger high-priority alerts.
+
 ## Compiling Custom HEF Models
 
 If you need to compile your own models:
@@ -282,6 +317,12 @@ journalctl -u security_camera -f
 ### Colours look wrong on IMX296
 The Global Shutter camera outputs BGR on Debian Trixie despite requesting RGB888. The frame_buffer.py handles this by skipping the colour swap. Ensure your system is fully updated.
 
+### ANPR not reading plates
+1. Check camera alignment using `python3 dual_camera_test.py` — both cameras must point the same direction
+2. Vehicles at the edges of the detection frame may fall outside the ANPR camera's narrower FOV
+3. Check `journalctl -u security_camera -f` for ANPR log messages
+4. The `pin_memory` PyTorch warning in the logs is harmless and can be ignored
+
 ### Database growing too large
 Increase `detection_log_cooldown` in config.yaml (default 30 seconds) to reduce how often the same object type is logged. Adjust `retention_days` to control how long events are kept. The database auto-cleans old records.
 
@@ -325,4 +366,9 @@ vcgencmd measure_temp
 
 # Check disk usage
 df -h
+
+# Plate management
+python3 manage_plates.py list
+python3 manage_plates.py stats
+python3 manage_plates.py events --hours 24
 ```
