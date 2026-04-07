@@ -7,11 +7,11 @@
 ![Platform](https://img.shields.io/badge/platform-Raspberry%20Pi%205-red.svg)
 ![Hailo](https://img.shields.io/badge/accelerator-Hailo--8L-orange.svg)
 
-A complete AI-powered security camera system that runs entirely on edge hardware. Uses YOLOv8 accelerated by the Hailo-8L AI accelerator for real-time object detection at 20+ FPS, with dual-camera ANPR (Automatic Number Plate Recognition) for vehicle monitoring. All processing happens on-device — no cloud required.
+A complete AI-powered security camera system that runs entirely on edge hardware. Uses YOLOv8 accelerated by the Hailo-8L AI accelerator for real-time object detection at ~30 FPS, with dual-camera ANPR (Automatic Number Plate Recognition) for vehicle monitoring. All processing happens on-device — no cloud required.
 
 ## Features
 
-- **Real-time Object Detection** — YOLOv8s on Hailo-8L at 20+ FPS with ~40ms inference
+- **Real-time Object Detection** — YOLOv8s on Hailo-8L at ~30 FPS with ~30ms inference
 - **Live Web Dashboard** — MJPEG video feed with detection overlays, live per-class counts, detected plates sidebar, and event history
 - **Dual Camera Support** — IMX296 Global Shutter (6mm, ~55° FOV) for detection, IMX477 HQ Camera (16mm, ~22° FOV) for ANPR
 - **Automatic Number Plate Recognition** — Detection camera spots vehicles → bounding box mapped to ANPR camera via angular FOV ratio → high-res capture → EasyOCR reads plate → validated against regional patterns
@@ -22,7 +22,6 @@ A complete AI-powered security camera system that runs entirely on edge hardware
 - **Dual Camera Test Viewer** — Side-by-side MJPEG viewer on port 5001 for checking camera alignment, focus, and colour
 - **CLI Plate Management** — Add, remove, search, import/export known and blacklisted plates
 - **Auto-start on Boot** — Systemd services for fully headless operation
-- **Fallback Mode** — Automatically falls back to CPU-based YOLO if Hailo is unavailable
 
 ## Hardware Requirements
 
@@ -235,11 +234,11 @@ Tested on Raspberry Pi 5 (8GB) with Hailo-8L:
 
 | Metric | Value |
 |--------|-------|
-| Detection FPS | 20–25 FPS |
-| Inference Time | ~40ms |
+| Detection FPS | ~30 FPS |
+| Inference Time | ~30ms |
 | End-to-end Latency | <100ms |
 | ANPR Read Time | ~10s per plate (EasyOCR on CPU) |
-| CPU Usage | ~30% |
+| CPU Usage | ~25% up to 100% for OCR|
 | Power Consumption | ~8W total |
 
 ANPR runs on a separate thread so plate reading does not block detection. The ~10s read time is typical for EasyOCR without GPU acceleration; the ANPR trigger cooldown prevents repeated captures of the same vehicle while it sits in frame.
