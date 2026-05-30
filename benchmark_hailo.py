@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
+import sys
 import time
 import numpy as np
 from hailo_detector import HailoDetector
 
-print("Benchmarking Hailo-8L YOLOv8s...")
+hef = sys.argv[1] if len(sys.argv) > 1 else 'models/yolov8m.hef'
+print(f"Benchmarking {hef}...")
 
-detector = HailoDetector('models/yolov8s.hef', confidence_threshold=0.5)
+detector = HailoDetector(hef, confidence_threshold=0.5)
 test_frame = np.random.randint(0, 255, (1080, 1920, 3), dtype=np.uint8)
 
 # Warmup
@@ -23,9 +25,8 @@ fps = iterations / (end - start)
 latency = (end - start) / iterations * 1000
 
 print(f"\n{'='*50}")
-print(f"  YOLOv8s on Hailo-8L Performance")
+print(f"  {hef}  (Hailo-8)")
 print(f"{'='*50}")
 print(f"  FPS:      {fps:.2f}")
 print(f"  Latency:  {latency:.2f} ms")
-print(f"  Speedup:  ~6-8x vs CPU")
 print(f"{'='*50}\n")
