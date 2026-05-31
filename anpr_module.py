@@ -131,7 +131,7 @@ class ANPRProcessor:
             self.logger.error(f"Tesseract error: {e}")
             return []
     
-    def read_plate(self, image, vehicle_bbox=None):
+    def read_plate(self, image, vehicle_bbox=None, plate_bbox=None):
         """
         Main method to read a number plate from an image.
         
@@ -139,6 +139,12 @@ class ANPRProcessor:
             image: Full camera frame (RGB)
             vehicle_bbox: Optional [x1, y1, x2, y2] in this camera's coordinates.
                          Dramatically speeds up processing by cropping first.
+            plate_bbox: Optional [x1, y1, x2, y2] tight plate region in this
+                         camera's coordinates, e.g. from the Hailo plate detector.
+                         When supplied, EasyOCR is fed a tight crop of just the
+                         plate (with small padding), skipping the geometric
+                         lower-50% guess entirely. Falls back to the geometric
+                         crop if the plate_bbox is empty/invalid.
         
         Returns:
             dict with 'plate', 'confidence', 'raw_text' or None
@@ -146,8 +152,35 @@ class ANPRProcessor:
         img_h, img_w = image.shape[:2]
         t_start = time.time()
         
-        # Step 1: Crop to vehicle region if bbox provided
-        if vehicle_bbox is not None:
+        # Step 1: Choose the search region.
+        # Priority: explicit plate_bbox (tight) > vehicle_bbox (geometric) > centre crop.
+        search_image = None
+        crop_path = "none"  # which crop fed OCR — surfaced at INFO for diagnosis
+
+        if plate_bbox is not None:
+            px1, py1, px2, py2 = plate_bbox
+            pw = px2 - px1
+            ph = py2 - py1
+
+            # Small padding around the plate so OCR has context / margin
+            pad_x = int(pw * 0.15)
+            pad_y = int(ph * 0.25)
+            crop_x1 = max(0, px1 - pad_x)
+            crop_y1 = max(0, py1 - pad_y)
+            crop_x2 = min(img_w, px2 + pad_x)
+            crop_y2 = min(img_h, py2 + pad_y)
+
+            candidate = image[crop_y1:crop_y2, crop_x1:crop_x2]
+            if candidate.size == 0:
+                self.logger.warning("Plate crop was empty, falling back to geometric crop")
+            else:
+                search_image = candidate
+                crop_path = "plate_bbox (tight)"
+                self.logger.debug(f"Plate crop: {search_image.shape[1]}x{search_image.shape[0]} "
+                                 f"from {img_w}x{img_h}")
+
+        # Geometric fallback: crop to vehicle region if bbox provided
+        if search_image is None and vehicle_bbox is not None:
             vx1, vy1, vx2, vy2 = vehicle_bbox
             vh = vy2 - vy1
             vw = vx2 - vx1
@@ -163,11 +196,15 @@ class ANPRProcessor:
             if search_image.size == 0:
                 self.logger.warning("Vehicle crop was empty, using full frame")
                 search_image = image
+                crop_path = "full_frame"
             else:
+                crop_path = "vehicle_bbox (geometric)"
                 self.logger.debug(f"Vehicle crop: {search_image.shape[1]}x{search_image.shape[0]} "
                                  f"from {img_w}x{img_h}")
-        else:
-            # No bbox — use centre-lower area (likely plate position with telephoto)
+
+        # Final fallback: no usable plate_bbox or vehicle_bbox — centre-lower area
+        if search_image is None:
+            # likely plate position with telephoto
             cx, cy = img_w // 2, int(img_h * 0.6)
             crop_w, crop_h = img_w // 3, img_h // 6
             search_image = image[
@@ -175,6 +212,7 @@ class ANPRProcessor:
                 max(0, cx - crop_w):min(img_w, cx + crop_w)
             ]
             self.logger.debug(f"Centre crop: {search_image.shape[1]}x{search_image.shape[0]}")
+            crop_path = "centre_crop"
         
         # Step 2: Resize for fast OCR
         ocr_image = self._resize_for_ocr(search_image)
@@ -187,6 +225,10 @@ class ANPRProcessor:
         
         elapsed = time.time() - t_start
         self.logger.debug(f"OCR took {elapsed:.1f}s, found {len(ocr_results)} text regions")
+        # INFO-level diagnostic: which crop fed OCR, its size, and how long OCR took.
+        # plate_bbox (tight) should be ~1s; vehicle_bbox (geometric) is the slow ~8s path.
+        self.logger.info(f"OCR path={crop_path} input={ocr_image.shape[1]}x{ocr_image.shape[0]} "
+                         f"time={elapsed:.1f}s regions={len(ocr_results)}")
         
         # Step 4: Find best plate match
         best_result = None

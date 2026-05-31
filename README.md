@@ -1,20 +1,21 @@
 # AI Security Camera System
 
-**Raspberry Pi 5 + Hailo-8L powered security camera with real-time object detection, ANPR, and smart alerts**
+**Raspberry Pi 5 + Hailo-8 powered security camera with real-time object detection, ANPR, and smart alerts**
 
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
 ![Python](https://img.shields.io/badge/python-3.11+-green.svg)
 ![Platform](https://img.shields.io/badge/platform-Raspberry%20Pi%205-red.svg)
-![Hailo](https://img.shields.io/badge/accelerator-Hailo--8L-orange.svg)
+![Hailo](https://img.shields.io/badge/accelerator-Hailo--8-orange.svg)
 
-A complete AI-powered security camera system that runs entirely on edge hardware. Uses YOLOv8 accelerated by the Hailo-8L AI accelerator for real-time object detection at ~30 FPS, with dual-camera ANPR (Automatic Number Plate Recognition) for vehicle monitoring. All processing happens on-device — no cloud required.
+A complete AI-powered security camera system that runs entirely on edge hardware. Uses YOLOv8 accelerated by the Hailo-8 AI accelerator for real-time object detection at 20+ FPS, with dual-camera ANPR (Automatic Number Plate Recognition) for vehicle monitoring. All processing happens on-device — no cloud required.
 
 ## Features
 
-- **Real-time Object Detection** — YOLOv8s on Hailo-8L at ~30 FPS with ~30ms inference
+- **Real-time Object Detection** — YOLOv8s on Hailo-8 at 40+ FPS with ~40ms inference
 - **Live Web Dashboard** — MJPEG video feed with detection overlays, live per-class counts, detected plates sidebar, and event history
 - **Dual Camera Support** — IMX296 Global Shutter (6mm, ~55° FOV) for detection, IMX477 HQ Camera (16mm, ~22° FOV) for ANPR
-- **Automatic Number Plate Recognition** — Detection camera spots vehicles → bounding box mapped to ANPR camera via angular FOV ratio → high-res capture → EasyOCR reads plate → validated against regional patterns
+- **Dual NPU Detectors, One Hailo-8** — A scheduler-enabled shared VDevice runs the YOLOv8s object detector and a dedicated single-class license-plate YOLOv8n detector concurrently on a single Hailo-8, with the round-robin scheduler handling activation (no contention, detection holds 40+ FPS)
+- **Automatic Number Plate Recognition** — Detection camera spots vehicles → bounding box mapped to ANPR camera via angular FOV ratio → NPU plate detector localises a tight plate crop → high-res capture → EasyOCR reads plate → validated against regional patterns
 - **Smart Alerts** — Push notifications via ntfy with configurable priorities and cooldowns
 - **Per-class Detection Logging** — Configurable cooldown prevents database spam while keeping the live feed responsive
 - **Event Logging** — SQLite database with 24-hour statistics, detection breakdowns, and retention policies
@@ -22,16 +23,17 @@ A complete AI-powered security camera system that runs entirely on edge hardware
 - **Dual Camera Test Viewer** — Side-by-side MJPEG viewer on port 5001 for checking camera alignment, focus, and colour
 - **CLI Plate Management** — Add, remove, search, import/export known and blacklisted plates
 - **Auto-start on Boot** — Systemd services for fully headless operation
+- **Fallback Mode** — Automatically falls back to CPU-based YOLO if Hailo is unavailable
 
 ## Hardware Requirements
 
 | Component | Model | Purpose |
 |-----------|-------|---------|
 | Single Board Computer | Raspberry Pi 5 (8GB recommended) | Main compute |
-| AI Accelerator | Hailo-8L (M.2) | Neural network inference |
+| AI Accelerator | Hailo-8 (M.2) | Neural network inference |
 | Detection Camera | IMX296 (Global Shutter) + 6mm lens | Object detection (~55° FOV) |
 | ANPR Camera (optional) | IMX477 (HQ Camera) + 16mm lens | License plate capture (~22° FOV) |
-| M.2 HAT | Pimoroni NVMe Base or official Pi M.2 HAT+ | Hailo-8L mounting |
+| M.2 HAT | Pimoroni NVMe Base or official Pi M.2 HAT+ | Hailo-8 mounting |
 | Storage | External SSD recommended | OS and recordings |
 | Power Supply | 27W USB-C PD | Stable power |
 
@@ -42,7 +44,7 @@ For complete setup instructions including OS installation and Hailo configuratio
 ### Prerequisites
 
 - Raspberry Pi OS (Debian Trixie, 64-bit)
-- Hailo-8L with `hailo-all` package installed
+- Hailo-8 with `hailo-all` package installed
 - Python 3.11+
 
 ### Installation
@@ -63,9 +65,16 @@ nano config.yaml
 python3 main.py
 ```
 
-### Pre-compiled Model
+### Pre-compiled Models
 
-You'll need a `yolov8s.hef` model compiled for the Hailo-8L. Place it in the `models/` directory. See [SETUP_GUIDE.md](SETUP_GUIDE.md) for details.
+You'll need two HEFs compiled for the Hailo-8, placed in the `models/` directory:
+
+- `yolov8s.hef` — the object detector
+- `license_plate_detector.hef` — a single-class license-plate detector
+
+See [SETUP_GUIDE.md](SETUP_GUIDE.md) for details.
+
+> **Note:** The plate detector shipped during development is a provisional level-0 build. A production rebuild is queued. The integration is build-agnostic — the production HEF is a true drop-in (same path, same single-class output), so swapping it requires no code changes.
 
 ## Usage
 
@@ -147,7 +156,9 @@ The detection process (`main.py`) owns the cameras and Hailo device. The dashboa
 
 ### ANPR Pipeline
 
-When a vehicle is detected by the IMX296 camera, the system maps the bounding box from the detection camera's coordinate space to the ANPR camera's coordinate space using an angular FOV ratio (pixels-per-degree). The IMX477 then captures a full-resolution 4056×3040 frame, crops to the lower half of the mapped vehicle region (where plates are), resizes to 800px wide, and runs EasyOCR. Detected text is validated against regional plate patterns (UK/NI, US, EU) and logged to the database.
+When a vehicle is detected by the IMX296 camera, the system maps the bounding box from the detection camera's coordinate space to the ANPR camera's coordinate space using an angular FOV ratio (pixels-per-degree). The IMX477 then captures a full-resolution 4056×3040 frame. A dedicated single-class license-plate YOLOv8n detector — running on the same Hailo-8 as the object detector via a shared scheduler-enabled VDevice — localises the plate within that frame. EasyOCR is then fed the tight plate crop. If plate localisation misses, the pipeline falls back to the geometric crop (lower half of the mapped vehicle region, resized to 800px wide). Detected text is validated against regional plate patterns (UK/NI, US, EU) and logged to the database.
+
+Both NPU models share one Hailo-8 device. `HailoDetector.create_shared_vdevice()` creates a single VDevice with the round-robin scheduling algorithm; each detector is loaded against it and the scheduler arbitrates activation, so no manual `network_group.activate()` is needed and the two models run without contention. The plate detector is loaded unconditionally at startup — a missing or broken plate HEF hard-fails startup rather than silently disabling the plate stage.
 
 ## Dashboard
 
@@ -174,7 +185,7 @@ The dashboard uses two data sources for responsiveness:
 ai-security-camera/
 ├── main.py                 # Main detection loop with ANPR and alerts
 ├── dashboard.py            # Flask web dashboard (port 5000)
-├── hailo_detector.py       # Hailo-8L inference with letterboxing
+├── hailo_detector.py       # Hailo-8 inference with letterboxing
 ├── frame_buffer.py         # Cross-process frame sharing via /dev/shm
 ├── anpr_module.py          # License plate recognition (EasyOCR)
 ├── database_manager.py     # SQLite database operations
@@ -182,12 +193,13 @@ ai-security-camera/
 ├── manage_plates.py        # CLI tool for plate database management
 ├── live_viewer.py          # Local OpenCV detection viewer (dev/debug)
 ├── dual_camera_test.py     # Side-by-side dual camera test viewer (port 5001)
-├── benchmark_hailo.py      # Hailo-8L inference benchmarking tool
+├── benchmark_hailo.py      # Hailo-8 inference benchmarking tool
 ├── config.yaml             # Configuration (create from example)
 ├── config_example.yaml     # Example configuration with comments
 ├── requirements.txt        # Python dependencies
 ├── models/
-│   ├── yolov8s.hef         # Hailo model (you provide)
+│   ├── yolov8s.hef         # Hailo object-detection model (you provide)
+│   ├── license_plate_detector.hef  # Hailo single-class plate detector (you provide)
 │   └── README.md           # Model details and compilation notes
 ├── database/
 │   └── security.db         # SQLite database (auto-created)
@@ -203,7 +215,9 @@ Key settings in `config.yaml`:
 detection:
   use_hailo: true
   hailo_model_path: "models/yolov8s.hef"
+  plate_model_path: "models/license_plate_detector.hef"  # NPU plate detector, shares the Hailo-8
   confidence_threshold: 0.5
+  plate_confidence_threshold: 0.25  # lower than main detector; small/distant plates
   classes_to_detect: null            # null = all 80 COCO classes
 
 anpr:
@@ -230,26 +244,30 @@ The `detection_log_cooldown` setting controls how often the same object type is 
 
 ## Performance
 
-Tested on Raspberry Pi 5 (8GB) with Hailo-8L:
+Tested on Raspberry Pi 5 (8GB) with Hailo-8:
 
 | Metric | Value |
 |--------|-------|
-| Detection FPS | ~30 FPS |
-| Inference Time | ~30ms |
+| Detection FPS | 40+ FPS |
+| Inference Time | ~40ms |
 | End-to-end Latency | <100ms |
-| ANPR Read Time | ~10s per plate (EasyOCR on CPU) |
-| CPU Usage | ~25% up to 100% for OCR|
+| ANPR Read Time (standalone) | ~3.3s per plate (EasyOCR on CPU) |
+| ANPR Read Time (live, under load) | ~9s per plate (CPU shared with detection loop) |
+| CPU Usage | ~30% |
 | Power Consumption | ~8W total |
 
-ANPR runs on a separate thread so plate reading does not block detection. The ~10s read time is typical for EasyOCR without GPU acceleration; the ANPR trigger cooldown prevents repeated captures of the same vehicle while it sits in frame.
+Both NPU detectors (object + plate) share one Hailo-8 via the round-robin scheduler with no measurable contention — detection holds 40+ FPS with the plate stage active. ANPR's EasyOCR step runs on a separate thread so plate reading does not block detection. EasyOCR is CPU-only (no GPU acceleration): a read takes ~3.3s in isolation but ~9s live, when it competes with the detection loop for CPU. This is a known performance item, not a correctness one — the ANPR trigger cooldown prevents repeated captures of the same vehicle while it sits in frame.
 
 ## Technical Notes
 
+- **Shared Hailo VDevice:** Both the YOLOv8s object detector and the YOLOv8n plate detector run on one Hailo-8 through a single scheduler-enabled VDevice (`HailoSchedulingAlgorithm.ROUND_ROBIN`). In shared mode `hailo_detector.py` skips its own VDevice creation and skips manual `network_group.activate()` — the scheduler handles activation. This is single-process, so no `multi_process_service` / `group_id` is used.
+- **Plate stage always on:** `main.py`'s `setup_yolo` loads the plate detector outside the try/except guarding the object detector, so a missing or broken plate HEF hard-fails startup rather than silently disabling ANPR localisation.
 - **Hailo coordinate format:** The Hailo NMS postprocessor outputs `[y1, x1, y2, x2]`, not the standard `[x1, y1, x2, y2]`. This is handled in `hailo_detector.py`.
 - **Letterboxing:** Input is letterboxed from 1920×1080 to 640×640 maintaining aspect ratio to prevent detection distortion. Coordinates are properly scaled back to original image space.
 - **Dual camera bbox mapping:** Detection bounding boxes are mapped from the IMX296 (6mm, ~55° FOV) to the IMX477 (16mm, ~22° FOV) using pixels-per-degree angular ratios with 30% padding for alignment tolerance.
 - **Frame sharing:** Uses `/dev/shm` for fast cross-process frame sharing between detection and dashboard processes.
 - **IMX296 colour format:** The Global Shutter camera outputs BGR directly despite requesting RGB888 format on Debian Trixie. The frame buffer handles this without conversion.
+- **IMX477 colour format:** The HQ camera also delivers BGR on Trixie. `save_frame` writes captured frames as-is (the previous RGB→BGR swap was inverting saved files and has been removed). An RGB-input experiment was run and rejected: BGR gives equal detection and better OCR confidence (0.999 vs 0.835), so the capture path stays on BGR.
 - **Debian Trixie:** Use `rpicam-*` commands (e.g. `rpicam-hello`), not the older `libcamera-*` commands.
 - **EasyOCR pin_memory warning:** A harmless PyTorch warning about `pin_memory` appears because EasyOCR runs without GPU. It can be safely ignored or suppressed.
 

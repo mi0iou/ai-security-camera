@@ -117,15 +117,22 @@ class SecurityCamera:
             raise
     
     def setup_yolo(self):
+        self.plate_detector = None  # set in the Hailo branch below
         try:
             if self.config['detection']['use_hailo']:
                 self.logger.info("Loading YOLO model with Hailo acceleration...")
                 from hailo_detector import HailoDetector
-                
+
+                # One shared, scheduler-enabled VDevice for BOTH models so they
+                # time-share the single physical Hailo device (round-robin).
+                self.logger.info("Creating shared Hailo VDevice (scheduler enabled)...")
+                self.vdevice = HailoDetector.create_shared_vdevice()
+
                 self.model = HailoDetector(
                     hef_path=self.config['detection']['hailo_model_path'],
                     confidence_threshold=self.config['detection']['confidence_threshold'],
-                    classes_to_detect=self.config['detection']['classes_to_detect']
+                    classes_to_detect=self.config['detection']['classes_to_detect'],
+                    vdevice=self.vdevice
                 )
                 self.use_hailo = True
                 self.logger.info("Hailo YOLO model loaded successfully")
@@ -134,13 +141,31 @@ class SecurityCamera:
                 self.model = YOLO(self.config['detection']['yolo_model'])
                 self.use_hailo = False
                 self.logger.info("Standard YOLO model loaded successfully")
-            
+
         except Exception as e:
             self.logger.error(f"YOLO initialization failed: {e}")
             self.logger.warning("Falling back to standard YOLO")
             self.model = YOLO(self.config['detection']['yolo_model'])
             self.use_hailo = False
-    
+
+        # Plate detector (Hailo) — only when running the Hailo path. Loaded OUTSIDE
+        # the try/except above on purpose: a plate-HEF failure must hard-fail
+        # startup, not be swallowed by the standard-YOLO fallback. The plate stage
+        # is always on, so if it can't load we want to know immediately.
+        if self.use_hailo:
+            from hailo_detector import HailoDetector
+            plate_hef = self.config['detection'].get(
+                'plate_model_path', 'models/license_plate_detector.hef'
+            )
+            self.logger.info(f"Loading plate detector onto shared VDevice: {plate_hef}")
+            self.plate_detector = HailoDetector(
+                hef_path=plate_hef,
+                confidence_threshold=self.config['detection'].get('plate_confidence_threshold', 0.25),
+                class_names=['license_plate'],
+                vdevice=self.vdevice
+            )
+            self.logger.info("Plate detector loaded successfully")
+
     def _update_fps(self, elapsed):
         """Update FPS tracking"""
         if elapsed > 0:
@@ -457,7 +482,27 @@ class SecurityCamera:
                 # Map the vehicle bbox from detection camera to ANPR camera coordinates
                 mapped_bbox = self._map_bbox_to_anpr(detection_data['bbox'])
                 
-                plate_result = self.anpr.read_plate(anpr_frame, vehicle_bbox=mapped_bbox)
+                # Hailo plate detection on the ANPR frame: localise the plate so
+                # EasyOCR receives a tight crop (~1s) instead of the geometric
+                # lower-half crop (~10s). plate_bbox is in ANPR-frame coordinates
+                # (the detector ran on that frame), so it needs no mapping.
+                # On a miss, plate_bbox stays None and read_plate falls back to the
+                # geometric vehicle crop.
+                plate_bbox = None
+                plate_dets = self.plate_detector.detect(anpr_frame)
+                if plate_dets:
+                    best_plate = max(plate_dets, key=lambda d: d['confidence'])
+                    plate_bbox = best_plate['bbox']
+                    self.logger.info(f"Plate localised: bbox={plate_bbox} "
+                                     f"conf={best_plate['confidence']:.2f} "
+                                     f"({len(plate_dets)} candidate(s))")
+                else:
+                    self.logger.info("Plate detector found NO plate; "
+                                     "falling back to geometric crop")
+                
+                plate_result = self.anpr.read_plate(
+                    anpr_frame, vehicle_bbox=mapped_bbox, plate_bbox=plate_bbox
+                )
                 
                 if plate_result and plate_result['confidence'] >= self.config['anpr']['min_confidence']:
                     plate_number = plate_result['plate']
@@ -515,13 +560,19 @@ class SecurityCamera:
                 self.logger.error(f"Error in ANPR loop: {e}")
     
     def save_frame(self, frame, prefix):
-        """Save frame to disk"""
+        """Save frame to disk.
+
+        Note: on Debian Trixie both cameras (IMX296 and IMX477) deliver frames
+        in BGR channel order despite the RGB888 request (verified). cv2.imwrite
+        expects BGR, so the frame is written as-is. Do NOT add an RGB2BGR swap
+        here — that would invert the colours (the cause of the earlier blue cars).
+        """
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         filename = f"{prefix}_{timestamp}.jpg"
         path = Path(self.config['storage']['image_path']) / filename
         path.parent.mkdir(parents=True, exist_ok=True)
         
-        cv2.imwrite(str(path), cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+        cv2.imwrite(str(path), frame)
         return str(path)
     
     def start(self):

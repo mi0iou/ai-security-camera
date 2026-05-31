@@ -1,11 +1,11 @@
-# Raspberry Pi 5 + Hailo-8L Setup Guide
+# Raspberry Pi 5 + Hailo-8 Setup Guide
 
-Complete setup guide for running the AI Security Camera on Raspberry Pi 5 with Hailo-8L acceleration.
+Complete setup guide for running the AI Security Camera on Raspberry Pi 5 with Hailo-8 acceleration.
 
 ## Hardware Required
 
 - Raspberry Pi 5 (8GB recommended)
-- Hailo-8L M.2 AI Accelerator
+- Hailo-8 M.2 AI Accelerator
 - M.2 HAT for Pi 5 (e.g., Pimoroni NVMe Base or official Pi M.2 HAT+)
 - External SSD (recommended for better performance and longer storage retention)
 - IMX296 Global Shutter Camera + 6mm lens (detection, ~55° FOV)
@@ -67,7 +67,7 @@ Verify installation:
 hailortcli fw-control identify
 ```
 
-You should see your Hailo-8L device info including firmware version and serial number.
+You should see your Hailo-8 device info including firmware version and serial number.
 
 ## Step 5: Install Python Dependencies
 
@@ -91,16 +91,20 @@ cd ai-security-camera
 
 ## Step 7: Obtain the Hailo Model
 
-You'll need a YOLOv8s model compiled for Hailo-8L (`yolov8s.hef`). Options:
+You'll need two models compiled for Hailo-8: a YOLOv8s object detector (`yolov8s.hef`) and a single-class license-plate YOLOv8n detector (`license_plate_detector.hef`). Options for each:
 
 1. **Download pre-compiled** from [Hailo Model Zoo](https://github.com/hailo-ai/hailo_model_zoo) (requires Hailo developer account)
 2. **Compile your own** using the Hailo Dataflow Compiler (see Compiling Custom HEF Models below)
 
-Place the model in the `models/` directory:
+Place the models in the `models/` directory:
 ```bash
 mkdir -p models
-# Copy your yolov8s.hef file here
+# Copy your yolov8s.hef and license_plate_detector.hef files here
 ```
+
+Both detectors share a single Hailo-8 at runtime via a scheduler-enabled VDevice — no separate accelerator is needed for the plate stage. The plate detector is loaded unconditionally at startup; if `license_plate_detector.hef` is missing or broken, startup hard-fails (the plate stage is always on by design).
+
+> **Note:** A provisional level-0 plate HEF was used during development; a production rebuild is queued. The integration is build-agnostic, so the production HEF drops in at the same path with no code changes.
 
 ## Step 8: Configure
 
@@ -113,6 +117,8 @@ Key settings to check:
 - **Camera indices** — verify with `rpicam-hello --list-cameras`
 - **ntfy server/topic** — for push notifications
 - **classes_to_detect** — `null` for all 80 COCO classes, or a list like `[0, 2, 5, 7]` (person, car, bus, truck)
+- **plate_model_path** — path to the plate detector HEF (default `models/license_plate_detector.hef`)
+- **plate_confidence_threshold** — confidence floor for the plate detector (default `0.25`, lower than the main detector to catch small/distant plates)
 - **anpr.plate_region** — set to `"uk"`, `"us"`, or `"eu"` to match your local plate format
 - **detection_log_cooldown** — seconds between database entries per class (prevents spam when objects sit in frame; default 30s)
 
@@ -141,9 +147,9 @@ python3 dual_camera_test.py
 
 Open `http://<pi-ip>:5001` in a browser. Both feeds are shown side by side with crosshairs for alignment checking. The detection camera's wider FOV (~55°) should fully contain the ANPR camera's narrower FOV (~22°). Mount both cameras close together, pointing in the same direction.
 
-### IMX296 Colour Note
+### Camera Colour Note
 
-The IMX296 Global Shutter camera outputs BGR format despite requesting RGB888 on Debian Trixie. The `frame_buffer.py` handles this correctly by skipping colour conversion. If colours look wrong in the dashboard, ensure your system is fully updated.
+The IMX296 Global Shutter camera outputs BGR format despite requesting RGB888 on Debian Trixie. The `frame_buffer.py` handles this correctly by skipping colour conversion. The IMX477 ANPR camera behaves the same way: `save_frame` in `main.py` writes captured frames as-is (an earlier RGB→BGR swap was inverting saved files and has been removed). If colours look wrong in the dashboard, ensure your system is fully updated.
 
 ## Step 10: Test Detection
 
@@ -159,7 +165,7 @@ python3 dashboard.py
 
 Open a browser to `http://<pi-ip>:5000` to see the dashboard with live video feed and detection overlays.
 
-If ANPR is enabled, you should see plate reads in the log when vehicles are detected. EasyOCR takes approximately 10 seconds per read on the Pi 5 CPU — this runs on a separate thread and does not block detection.
+If ANPR is enabled, you should see plate reads in the log when vehicles are detected. The NPU plate detector localises the plate on the IMX477 frame and EasyOCR reads the tight crop. EasyOCR is CPU-only: a read takes ~3.3s standalone but ~9s live (sharing CPU with the detection loop). It runs on a separate thread and does not block detection.
 
 ## Step 11: Setup Services
 

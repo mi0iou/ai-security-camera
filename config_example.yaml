@@ -21,6 +21,8 @@ detection:
   classes_to_detect: null           # null = all 80 COCO classes, or list e.g. [0, 2, 5, 7]
   use_hailo: true
   hailo_model_path: "models/yolov8s.hef"
+  plate_model_path: "models/license_plate_detector.hef"  # NPU plate detector (always on; shares the Hailo-8)
+  plate_confidence_threshold: 0.25  # Lower than main detector to catch small/distant plates
 
 anpr:
   enabled: true

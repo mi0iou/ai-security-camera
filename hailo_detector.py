@@ -11,42 +11,69 @@ normalized 0-1 relative to the 640x640 letterboxed image, NOT [x1, y1, x2, y2]!
 import numpy as np
 import cv2
 import logging
-from hailo_platform import HEF, VDevice, InferVStreams, InputVStreamParams, OutputVStreamParams
+from hailo_platform import HEF, VDevice, InferVStreams, InputVStreamParams, OutputVStreamParams, HailoSchedulingAlgorithm
 
 
 class HailoDetector:
-    def __init__(self, hef_path, confidence_threshold=0.5, classes_to_detect=None):
+    # Default COCO-80 class names (used when no class_names arg is supplied)
+    DEFAULT_COCO_CLASSES = [
+        'person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus', 'train',
+        'truck', 'boat', 'traffic light', 'fire hydrant', 'stop sign',
+        'parking meter', 'bench', 'bird', 'cat', 'dog', 'horse', 'sheep',
+        'cow', 'elephant', 'bear', 'zebra', 'giraffe', 'backpack', 'umbrella',
+        'handbag', 'tie', 'suitcase', 'frisbee', 'skis', 'snowboard',
+        'sports ball', 'kite', 'baseball bat', 'baseball glove', 'skateboard',
+        'surfboard', 'tennis racket', 'bottle', 'wine glass', 'cup', 'fork',
+        'knife', 'spoon', 'bowl', 'banana', 'apple', 'sandwich', 'orange',
+        'broccoli', 'carrot', 'hot dog', 'pizza', 'donut', 'cake', 'chair',
+        'couch', 'potted plant', 'bed', 'dining table', 'toilet', 'tv',
+        'laptop', 'mouse', 'remote', 'keyboard', 'cell phone', 'microwave',
+        'oven', 'toaster', 'sink', 'refrigerator', 'book', 'clock', 'vase',
+        'scissors', 'teddy bear', 'hair drier', 'toothbrush'
+    ]
+
+    def __init__(self, hef_path, confidence_threshold=0.5, classes_to_detect=None,
+                 class_names=None, vdevice=None):
         self.logger = logging.getLogger('HailoDetector')
         self.confidence_threshold = confidence_threshold
         self.classes_to_detect = classes_to_detect
-        
-        # COCO class names
-        self.class_names = [
-            'person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus', 'train',
-            'truck', 'boat', 'traffic light', 'fire hydrant', 'stop sign',
-            'parking meter', 'bench', 'bird', 'cat', 'dog', 'horse', 'sheep',
-            'cow', 'elephant', 'bear', 'zebra', 'giraffe', 'backpack', 'umbrella',
-            'handbag', 'tie', 'suitcase', 'frisbee', 'skis', 'snowboard',
-            'sports ball', 'kite', 'baseball bat', 'baseball glove', 'skateboard',
-            'surfboard', 'tennis racket', 'bottle', 'wine glass', 'cup', 'fork',
-            'knife', 'spoon', 'bowl', 'banana', 'apple', 'sandwich', 'orange',
-            'broccoli', 'carrot', 'hot dog', 'pizza', 'donut', 'cake', 'chair',
-            'couch', 'potted plant', 'bed', 'dining table', 'toilet', 'tv',
-            'laptop', 'mouse', 'remote', 'keyboard', 'cell phone', 'microwave',
-            'oven', 'toaster', 'sink', 'refrigerator', 'book', 'clock', 'vase',
-            'scissors', 'teddy bear', 'hair drier', 'toothbrush'
-        ]
+
+        # Class names map output class_id -> label. Defaults to COCO-80.
+        # Pass class_names=['license_plate'] for the single-class plate detector,
+        # so labelling is model-specific rather than hardcoded to COCO.
+        self.class_names = list(class_names) if class_names is not None \
+            else list(self.DEFAULT_COCO_CLASSES)
         
         self.logger.info(f"Loading Hailo model from {hef_path}")
         
         # Load HEF
         self.hef = HEF(hef_path)
         
-        # Create device
-        params = VDevice.create_params()
-        self.device = VDevice(params)
+        # Device handling — two mutually exclusive modes:
+        #
+        #   Owned mode (vdevice=None, default): this instance creates and owns its
+        #     own VDevice with the scheduler DISABLED (the historical behaviour).
+        #     detect() manually activates the network group per inference. Correct
+        #     for running a SINGLE model standalone (yolov8s today, benchmarks, tests).
+        #
+        #   Shared mode (vdevice passed in): an externally-created VDevice is reused
+        #     so multiple models share ONE physical device. That shared VDevice MUST
+        #     be created with the round-robin scheduler enabled (see
+        #     HailoDetector.create_shared_vdevice). With the scheduler enabled,
+        #     activation/deactivation is automatic and detect() must NOT call
+        #     network_group.activate() — doing so conflicts with the scheduler.
+        if vdevice is not None:
+            self.device = vdevice
+            self._owns_device = False
+            self._scheduler_enabled = True
+        else:
+            params = VDevice.create_params()
+            self.device = VDevice(params)
+            self._owns_device = True
+            self._scheduler_enabled = False
         
-        # Configure network group
+        # Configure network group (adds a network group to the device; on a shared
+        # scheduler-enabled VDevice this is how a second model is added)
         network_groups = self.device.configure(self.hef)
         self.network_group = network_groups[0]
         self.network_group_params = self.network_group.create_params()
@@ -71,6 +98,28 @@ class HailoDetector:
         )
         
         self.logger.info(f"Hailo model loaded. Input: {self.input_name}, Shape: {self.input_height}x{self.input_width}x{self.input_channels}")
+    
+    @staticmethod
+    def create_shared_vdevice():
+        """
+        Create a single VDevice with the round-robin model scheduler enabled,
+        for sharing one physical Hailo device across multiple models (network
+        groups) within ONE process.
+
+        Pass the returned VDevice into multiple HailoDetector(..., vdevice=...)
+        instances. The scheduler then time-shares the device automatically; no
+        manual network-group activation is needed (or allowed).
+
+        For a single-process / multi-thread app (this project: detection thread +
+        ANPR thread) do NOT set multi_process_service or group_id — those are only
+        for sharing across separate OS processes.
+
+        The caller owns the returned VDevice and is responsible for its lifetime;
+        it must outlive every HailoDetector configured onto it.
+        """
+        params = VDevice.create_params()
+        params.scheduling_algorithm = HailoSchedulingAlgorithm.ROUND_ROBIN
+        return VDevice(params)
     
     def letterbox(self, frame, new_shape=(640, 640), color=(114, 114, 114)):
         """
@@ -296,10 +345,16 @@ class HailoDetector:
             # Create input dictionary
             input_dict = {self.input_name: input_array}
             
-            # Activate network group and run inference
-            with self.network_group.activate(self.network_group_params):
+            # Run inference. With the scheduler enabled (shared VDevice), activation
+            # is automatic and we must NOT call network_group.activate(). In owned
+            # mode (no scheduler), we activate the network group manually as before.
+            if self._scheduler_enabled:
                 with InferVStreams(self.network_group, self.input_vstreams_params, self.output_vstreams_params) as infer_pipeline:
                     raw_outputs = infer_pipeline.infer(input_dict)
+            else:
+                with self.network_group.activate(self.network_group_params):
+                    with InferVStreams(self.network_group, self.input_vstreams_params, self.output_vstreams_params) as infer_pipeline:
+                        raw_outputs = infer_pipeline.infer(input_dict)
             
             # Postprocess with proper coordinate scaling
             detections = self.postprocess_detections(raw_outputs, original_shape, scale, pad)
@@ -313,11 +368,12 @@ class HailoDetector:
             return []
     
     def __del__(self):
-        """Cleanup"""
+        """Cleanup. Only release the device if this instance owns it; a shared
+        VDevice is owned by the caller and must not be torn down here."""
         try:
             if hasattr(self, 'network_group'):
                 self.network_group = None
-            if hasattr(self, 'device'):
+            if getattr(self, '_owns_device', True) and hasattr(self, 'device'):
                 self.device = None
         except:
             pass
