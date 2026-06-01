@@ -650,7 +650,7 @@ def dashboard():
                 <div class="logo-icon">&#127919;</div>
                 <div>
                     <h1>AI Security Command Center</h1>
-                    <p>HAILO-8L + YOLOv8 // RPi5</p>
+                    <p>HAILO-8 + YOLOv8 // RPi5</p>
                 </div>
             </div>
             <div class="header-controls">
@@ -776,7 +776,7 @@ def dashboard():
         </div>
         
         <footer class="footer">
-            Powered by <span>Hailo-8L AI Acceleration</span> &bull; YOLOv8s &bull; Raspberry Pi 5
+            Powered by <span>Hailo-8 AI Acceleration</span> &bull; YOLOv8 &bull; Raspberry Pi 5
         </footer>
     </div>
     
