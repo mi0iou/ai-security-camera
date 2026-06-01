@@ -74,7 +74,7 @@ You'll need two HEFs compiled for the Hailo-8, placed in the `models/` directory
 
 See [SETUP_GUIDE.md](SETUP_GUIDE.md) for details.
 
-> **Note:** The plate detector shipped during development is a provisional level-0 build. A production rebuild is queued. The integration is build-agnostic — the production HEF is a true drop-in (same path, same single-class output), so swapping it requires no code changes.
+> **Note:** The plate detector is a production Hailo-8 build (YOLOv8n, single license_plate class). The integration is build-agnostic — the HEF drops in at the same path with the same single-class output, so rebuilding or replacing it requires no code changes. See models/models_README.md for compilation notes.
 
 ## Usage
 

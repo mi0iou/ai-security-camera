@@ -104,7 +104,7 @@ mkdir -p models
 
 Both detectors share a single Hailo-8 at runtime via a scheduler-enabled VDevice — no separate accelerator is needed for the plate stage. The plate detector is loaded unconditionally at startup; if `license_plate_detector.hef` is missing or broken, startup hard-fails (the plate stage is always on by design).
 
-> **Note:** A provisional level-0 plate HEF was used during development; a production rebuild is queued. The integration is build-agnostic, so the production HEF drops in at the same path with no code changes.
+> **Note:** The plate detector is a production Hailo-8 build. The integration is build-agnostic, so the HEF drops in at the same path with no code changes. See models/models_README.md for compilation notes.
 
 ## Step 8: Configure
 
