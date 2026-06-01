@@ -30,6 +30,12 @@ anpr:
   trigger_on_vehicle: true
   min_confidence: 0.5
   plate_region: "uk"                # Plate format: "uk", "us", or "eu"
+  max_plate_height: 96              # Cap (px) on plate height fed to OCR on the tight
+                                    # plate-detector path. Downscales oversized close
+                                    # plates for fast reads; distant (smaller) plates
+                                    # pass through untouched. 96 benchmarked best
+                                    # (100% accuracy, fastest). Raise if distant plates
+                                    # start misreading; lower for more speed.
 
 database:
   path: "database/security.db"

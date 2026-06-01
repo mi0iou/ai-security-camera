@@ -120,6 +120,7 @@ Key settings to check:
 - **plate_model_path** — path to the plate detector HEF (default `models/license_plate_detector.hef`)
 - **plate_confidence_threshold** — confidence floor for the plate detector (default `0.25`, lower than the main detector to catch small/distant plates)
 - **anpr.plate_region** — set to `"uk"`, `"us"`, or `"eu"` to match your local plate format
+- **anpr.max_plate_height** — cap (px) on plate height fed to OCR on the tight plate-detector path (default `96`). Downscales oversized close-up plates for fast reads; distant (already-small) plates pass through untouched. Benchmarked best at 96 (100% accuracy, fastest); raise it if distant plates start misreading, lower it for more speed.
 - **detection_log_cooldown** — seconds between database entries per class (prevents spam when objects sit in frame; default 30s)
 
 ## Step 9: Test the Cameras
@@ -165,7 +166,7 @@ python3 dashboard.py
 
 Open a browser to `http://<pi-ip>:5000` to see the dashboard with live video feed and detection overlays.
 
-If ANPR is enabled, you should see plate reads in the log when vehicles are detected. The NPU plate detector localises the plate on the IMX477 frame and EasyOCR reads the tight crop. EasyOCR is CPU-only: a read takes ~3.3s standalone but ~9s live (sharing CPU with the detection loop). It runs on a separate thread and does not block detection.
+If ANPR is enabled, you should see plate reads in the log when vehicles are detected. The NPU plate detector localises the plate on the IMX477 frame, the crop is downscaled so the plate is at most `max_plate_height` px tall, and EasyOCR reads it. A tight-crop read takes ~1.7s live; it runs on a separate thread and does not block detection. The log line `OCR path=plate_bbox (tight) input=WxH time=Xs` lets you confirm the cap is firing (a small `input` height, ~96px) and watch the read time. If you instead see `OCR path=vehicle_bbox (geometric)`, the plate detector missed and the slower (~4s) fallback ran.
 
 ## Step 11: Setup Services
 

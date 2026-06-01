@@ -7,7 +7,7 @@
 ![Platform](https://img.shields.io/badge/platform-Raspberry%20Pi%205-red.svg)
 ![Hailo](https://img.shields.io/badge/accelerator-Hailo--8-orange.svg)
 
-A complete AI-powered security camera system that runs entirely on edge hardware. Uses YOLOv8 accelerated by the Hailo-8 AI accelerator for real-time object detection at 20+ FPS, with dual-camera ANPR (Automatic Number Plate Recognition) for vehicle monitoring. All processing happens on-device — no cloud required.
+A complete AI-powered security camera system that runs entirely on edge hardware. Uses YOLOv8 accelerated by the Hailo-8 AI accelerator for real-time object detection at 40+ FPS, with dual-camera ANPR (Automatic Number Plate Recognition) for vehicle monitoring. All processing happens on-device — no cloud required.
 
 ## Features
 
@@ -15,7 +15,7 @@ A complete AI-powered security camera system that runs entirely on edge hardware
 - **Live Web Dashboard** — MJPEG video feed with detection overlays, live per-class counts, detected plates sidebar, and event history
 - **Dual Camera Support** — IMX296 Global Shutter (6mm, ~55° FOV) for detection, IMX477 HQ Camera (16mm, ~22° FOV) for ANPR
 - **Dual NPU Detectors, One Hailo-8** — A scheduler-enabled shared VDevice runs the YOLOv8s object detector and a dedicated single-class license-plate YOLOv8n detector concurrently on a single Hailo-8, with the round-robin scheduler handling activation (no contention, detection holds 40+ FPS)
-- **Automatic Number Plate Recognition** — Detection camera spots vehicles → bounding box mapped to ANPR camera via angular FOV ratio → NPU plate detector localises a tight plate crop → high-res capture → EasyOCR reads plate → validated against regional patterns
+- **Automatic Number Plate Recognition** — Detection camera spots vehicles → bounding box mapped to ANPR camera via angular FOV ratio → NPU plate detector localises a tight plate crop → high-res capture → plate crop downscaled by plate height for fast OCR → EasyOCR reads plate (~1.7s live) → validated against regional patterns
 - **Smart Alerts** — Push notifications via ntfy with configurable priorities and cooldowns
 - **Per-class Detection Logging** — Configurable cooldown prevents database spam while keeping the live feed responsive
 - **Event Logging** — SQLite database with 24-hour statistics, detection breakdowns, and retention policies
@@ -156,7 +156,9 @@ The detection process (`main.py`) owns the cameras and Hailo device. The dashboa
 
 ### ANPR Pipeline
 
-When a vehicle is detected by the IMX296 camera, the system maps the bounding box from the detection camera's coordinate space to the ANPR camera's coordinate space using an angular FOV ratio (pixels-per-degree). The IMX477 then captures a full-resolution 4056×3040 frame. A dedicated single-class license-plate YOLOv8n detector — running on the same Hailo-8 as the object detector via a shared scheduler-enabled VDevice — localises the plate within that frame. EasyOCR is then fed the tight plate crop. If plate localisation misses, the pipeline falls back to the geometric crop (lower half of the mapped vehicle region, resized to 800px wide). Detected text is validated against regional plate patterns (UK/NI, US, EU) and logged to the database.
+When a vehicle is detected by the IMX296 camera, the system maps the bounding box from the detection camera's coordinate space to the ANPR camera's coordinate space using an angular FOV ratio (pixels-per-degree). The IMX477 then captures a full-resolution 4056×3040 frame. A dedicated single-class license-plate YOLOv8n detector — running on the same Hailo-8 as the object detector via a shared scheduler-enabled VDevice — localises the plate within that frame. The plate crop is then downscaled so the plate is at most `max_plate_height` pixels tall (default 96) before being handed to EasyOCR. Because the plate detector reports the plate's pixel height, this cap shrinks oversized close-up plates (which dominate read time) while leaving already-small distant plates untouched. If plate localisation misses, the pipeline falls back to the geometric crop (lower half of the mapped vehicle region, resized to 800px wide). Detected text is validated against regional plate patterns (UK/NI, US, EU) and logged to the database.
+
+EasyOCR runs PyTorch on the CPU, which by default claims every core and contends with the detection loop. The ANPR module pins PyTorch to a single thread, which removes that contention; the OCR input is a small plate crop that gains nothing from parallelism. Together, the plate-height cap and the thread pin cut a representative live read from ~9s to ~1.7s with no loss of accuracy.
 
 Both NPU models share one Hailo-8 device. `HailoDetector.create_shared_vdevice()` creates a single VDevice with the round-robin scheduling algorithm; each detector is loaded against it and the scheduler arbitrates activation, so no manual `network_group.activate()` is needed and the two models run without contention. The plate detector is loaded unconditionally at startup — a missing or broken plate HEF hard-fails startup rather than silently disabling the plate stage.
 
@@ -225,6 +227,7 @@ anpr:
   method: "easyocr"                  # EasyOCR for plate recognition
   min_confidence: 0.5
   plate_region: "uk"                 # "uk", "us", or "eu"
+  max_plate_height: 96               # cap (px) on plate height fed to OCR (tight path)
 
 alerts:
   ntfy_server: "http://localhost"    # or https://ntfy.sh
@@ -251,17 +254,18 @@ Tested on Raspberry Pi 5 (8GB) with Hailo-8:
 | Detection FPS | 40+ FPS |
 | Inference Time | ~40ms |
 | End-to-end Latency | <100ms |
-| ANPR Read Time (standalone) | ~3.3s per plate (EasyOCR on CPU) |
-| ANPR Read Time (live, under load) | ~9s per plate (CPU shared with detection loop) |
+| ANPR Read Time (tight crop, live) | ~1.7s per plate (plate-height cap + single-thread OCR) |
+| ANPR Read Time (geometric fallback) | ~4s per plate (plate detector missed; 800px crop) |
 | CPU Usage | ~30% |
 | Power Consumption | ~8W total |
 
-Both NPU detectors (object + plate) share one Hailo-8 via the round-robin scheduler with no measurable contention — detection holds 40+ FPS with the plate stage active. ANPR's EasyOCR step runs on a separate thread so plate reading does not block detection. EasyOCR is CPU-only (no GPU acceleration): a read takes ~3.3s in isolation but ~9s live, when it competes with the detection loop for CPU. This is a known performance item, not a correctness one — the ANPR trigger cooldown prevents repeated captures of the same vehicle while it sits in frame.
+Both NPU detectors (object + plate) share one Hailo-8 via the round-robin scheduler with no measurable contention — detection holds 40+ FPS with the plate stage active. ANPR's EasyOCR step runs on a separate thread so plate reading does not block detection. Two optimisations bring live read time down to ~1.7s on the tight-crop path: the plate crop is downscaled so the plate is at most ~96px tall (configurable via `max_plate_height`), and PyTorch is pinned to a single thread so EasyOCR stops competing with the detection loop for CPU. Earlier, an uncapped 800px crop read by multi-threaded PyTorch took ~9s under load. The geometric fallback path (used only when the plate detector misses) is still ~4s, since there is no known plate height to cap by. The ANPR trigger cooldown prevents repeated captures of the same vehicle while it sits in frame.
 
 ## Technical Notes
 
 - **Shared Hailo VDevice:** Both the YOLOv8s object detector and the YOLOv8n plate detector run on one Hailo-8 through a single scheduler-enabled VDevice (`HailoSchedulingAlgorithm.ROUND_ROBIN`). In shared mode `hailo_detector.py` skips its own VDevice creation and skips manual `network_group.activate()` — the scheduler handles activation. This is single-process, so no `multi_process_service` / `group_id` is used.
 - **Plate stage always on:** `main.py`'s `setup_yolo` loads the plate detector outside the try/except guarding the object detector, so a missing or broken plate HEF hard-fails startup rather than silently disabling ANPR localisation.
+- **OCR latency:** Live plate reads were ~9s under load. Two changes brought this to ~1.7s with no accuracy loss: (1) `anpr_module._resize_to_plate_height` downscales the tight crop so the plate is at most `max_plate_height` px tall (default 96) — a one-directional cap that shrinks oversized close plates but never upscales distant ones; (2) PyTorch is pinned to one thread (`torch.set_num_threads(1)`) at ANPR init, since EasyOCR's default multi-threading was contending with the detection loop. The 96px default was chosen by benchmarking across near/far plates (`benchmark_ocr_contention.py`): 96px held 100% read accuracy and was the fastest cap tested. Raise `max_plate_height` if distant plates start misreading. The geometric fallback path keeps the 800px width cap, as it has no known plate height.
 - **Hailo coordinate format:** The Hailo NMS postprocessor outputs `[y1, x1, y2, x2]`, not the standard `[x1, y1, x2, y2]`. This is handled in `hailo_detector.py`.
 - **Letterboxing:** Input is letterboxed from 1920×1080 to 640×640 maintaining aspect ratio to prevent detection distortion. Coordinates are properly scaled back to original image space.
 - **Dual camera bbox mapping:** Detection bounding boxes are mapped from the IMX296 (6mm, ~55° FOV) to the IMX477 (16mm, ~22° FOV) using pixels-per-degree angular ratios with 30% padding for alignment tolerance.

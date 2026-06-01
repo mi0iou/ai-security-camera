@@ -11,6 +11,7 @@ import threading
 import queue
 import time
 import sqlite3
+import json
 import logging
 from collections import Counter
 from datetime import datetime, timedelta
@@ -489,12 +490,14 @@ class SecurityCamera:
                 # On a miss, plate_bbox stays None and read_plate falls back to the
                 # geometric vehicle crop.
                 plate_bbox = None
+                plate_det_conf = None
                 plate_dets = self.plate_detector.detect(anpr_frame)
                 if plate_dets:
                     best_plate = max(plate_dets, key=lambda d: d['confidence'])
                     plate_bbox = best_plate['bbox']
+                    plate_det_conf = best_plate['confidence']
                     self.logger.info(f"Plate localised: bbox={plate_bbox} "
-                                     f"conf={best_plate['confidence']:.2f} "
+                                     f"conf={plate_det_conf:.2f} "
                                      f"({len(plate_dets)} candidate(s))")
                 else:
                     self.logger.info("Plate detector found NO plate; "
@@ -512,6 +515,17 @@ class SecurityCamera:
                     
                     if self.config['storage']['save_anpr_frames']:
                         image_path = self.save_frame(anpr_frame, f"plate_{plate_number}")
+                        # Sidecar metadata for the contention benchmark: the exact
+                        # plate bbox the live path used, plus the live OCR figures.
+                        # Lets the benchmark reproduce the real crop with no
+                        # re-localisation (no NPU contention from the benchmark).
+                        self._save_anpr_sidecar(
+                            image_path,
+                            plate_bbox=plate_bbox,
+                            plate_det_conf=plate_det_conf,
+                            ocr_conf=confidence,
+                            frame_shape=anpr_frame.shape,
+                        )
                     else:
                         image_path = None
                     
@@ -574,6 +588,31 @@ class SecurityCamera:
         
         cv2.imwrite(str(path), frame)
         return str(path)
+
+    def _save_anpr_sidecar(self, image_path, plate_bbox, plate_det_conf,
+                           ocr_conf, frame_shape):
+        """Write a <frame>.json sidecar with the plate bbox the live path used.
+
+        Consumed by benchmark_ocr_contention.py so it can reproduce the exact
+        live crop from a saved frame without re-running the plate detector
+        (which would contend for the Hailo device while the service runs).
+        Best-effort: a failure here must never disrupt the ANPR loop.
+        """
+        try:
+            h, w = frame_shape[:2]
+            meta = {
+                'plate_bbox': list(plate_bbox) if plate_bbox is not None else None,
+                'plate_det_conf': (float(plate_det_conf)
+                                   if plate_det_conf is not None else None),
+                'ocr_conf': float(ocr_conf) if ocr_conf is not None else None,
+                'frame_w': int(w),
+                'frame_h': int(h),
+            }
+            json_path = str(Path(image_path).with_suffix('.json'))
+            with open(json_path, 'w') as f:
+                json.dump(meta, f)
+        except Exception as e:
+            self.logger.warning(f"Could not write ANPR sidecar: {e}")
     
     def start(self):
         """Start all processing threads"""

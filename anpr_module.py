@@ -28,6 +28,18 @@ class ANPRProcessor:
         if self.method == 'easyocr':
             try:
                 import easyocr
+                # EasyOCR runs PyTorch on the CPU. By default PyTorch grabs every
+                # core, which makes it fight the detection loop for CPU and inflated
+                # live reads to ~9s (vs ~1s of actual work). Pinning to a single
+                # thread removes that contention; the OCR input is tiny (a capped
+                # plate crop) so it does not need parallelism. Benchmarked: threads>1
+                # gave no speed-up and occasionally spiked under load.
+                try:
+                    import torch
+                    torch.set_num_threads(1)
+                    self.logger.info("Pinned PyTorch to 1 thread (avoids detection-loop contention)")
+                except Exception as e:
+                    self.logger.warning(f"Could not set torch thread count: {e}")
                 self.reader = easyocr.Reader(['en'], gpu=False)
                 self.logger.info("EasyOCR initialized")
             except ImportError:
@@ -51,9 +63,20 @@ class ANPRProcessor:
             'eu': r'^[A-Z]{1,3}[-\s]?[0-9]{1,4}[-\s]?[A-Z]{1,3}$',
         }
         
-        # Max width for OCR input — controls speed/accuracy tradeoff
-        # 800px is fast (~2-5s on Pi 5) while keeping plate text readable
+        # Max width for OCR input — controls speed/accuracy tradeoff.
+        # Used by the geometric/centre fallback paths, where we don't know the
+        # plate's pixel height. 800px keeps fallback-crop text readable.
         self.max_ocr_width = 800
+
+        # Max PLATE height (px) for the tight plate_bbox path. The plate detector
+        # gives us the plate's exact pixel height, so we cap the crop so the plate
+        # is at most this tall — never upscaling, so distant (already-small) plates
+        # are untouched while oversized close plates are shrunk. This is the main
+        # live speed lever: close plates were arriving at EasyOCR ~800px wide (~9s
+        # under load); capped to a ~96px plate they read correctly in ~1s.
+        # Benchmarked across near/far plates: 96px held 100% read accuracy and was
+        # the fastest cap tested; larger caps were slower with no accuracy gain.
+        self.max_plate_height = config.get('max_plate_height', 96)
     
     def clean_plate_text(self, text):
         """Clean and format plate text"""
@@ -74,6 +97,24 @@ class ANPRProcessor:
         
         return bool(re.match(pattern, text))
     
+    def _resize_to_plate_height(self, image, plate_px_h):
+        """Downscale a tight plate crop so the plate is at most max_plate_height
+        tall. One-directional: a plate already shorter (distant vehicle) is passed
+        through untouched, preserving its limited detail; only oversized close
+        plates are shrunk. plate_px_h is the plate's height in the ORIGINAL frame
+        (py2 - py1), i.e. the plate within this crop, not the padded crop height.
+        """
+        if plate_px_h <= 0 or plate_px_h <= self.max_plate_height:
+            return image  # already at/under the ceiling — leave it alone
+        scale = self.max_plate_height / plate_px_h  # < 1.0, downscale only
+        h, w = image.shape[:2]
+        new_w = max(1, int(w * scale))
+        new_h = max(1, int(h * scale))
+        resized = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_AREA)
+        self.logger.debug(f"Plate-height cap: {w}x{h} -> {new_w}x{new_h} "
+                          f"(plate {plate_px_h}px -> ~{self.max_plate_height}px)")
+        return resized
+
     def _resize_for_ocr(self, image):
         """Resize image so the longest edge is max_ocr_width, if needed"""
         h, w = image.shape[:2]
@@ -156,6 +197,7 @@ class ANPRProcessor:
         # Priority: explicit plate_bbox (tight) > vehicle_bbox (geometric) > centre crop.
         search_image = None
         crop_path = "none"  # which crop fed OCR — surfaced at INFO for diagnosis
+        plate_px_h = None   # plate height in original frame; set on the tight path
 
         if plate_bbox is not None:
             px1, py1, px2, py2 = plate_bbox
@@ -176,6 +218,7 @@ class ANPRProcessor:
             else:
                 search_image = candidate
                 crop_path = "plate_bbox (tight)"
+                plate_px_h = ph  # plate height in original frame, for height cap
                 self.logger.debug(f"Plate crop: {search_image.shape[1]}x{search_image.shape[0]} "
                                  f"from {img_w}x{img_h}")
 
@@ -214,8 +257,14 @@ class ANPRProcessor:
             self.logger.debug(f"Centre crop: {search_image.shape[1]}x{search_image.shape[0]}")
             crop_path = "centre_crop"
         
-        # Step 2: Resize for fast OCR
-        ocr_image = self._resize_for_ocr(search_image)
+        # Step 2: Resize for fast OCR.
+        # Tight plate path: cap by PLATE HEIGHT (we know it from the detector), which
+        # shrinks oversized close plates while leaving distant small plates intact.
+        # Fallback paths: no known plate height, so keep the longest-edge width cap.
+        if plate_px_h is not None:
+            ocr_image = self._resize_to_plate_height(search_image, plate_px_h)
+        else:
+            ocr_image = self._resize_for_ocr(search_image)
         
         # Step 3: Run OCR
         if self.method == 'easyocr':
