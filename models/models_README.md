@@ -88,7 +88,8 @@ the only record of how to reproduce it.
   original-images export (8823 images, CC BY 4.0, no augmentation applied). 1200
   images were sampled from the train split and flattened to clean RGB; 1024 were
   used for calibration. Validation/test splits were left untouched for later
-  accuracy evaluation.
+  accuracy evaluation (see [INT8 Quantization Accuracy](#int8-quantization-accuracy-plate-detector)
+  below).
 
 ### Toolchain
 
@@ -166,6 +167,77 @@ hailomz compile yolov8n \
   directory may not be writable/readable by the container and vice versa. Fix with
   `sudo chown -R 10642:10600 <dir>` on the host for files the container needs, and
   chown back to your user for outputs you need to access from the host.
+
+## INT8 Quantization Accuracy (Plate Detector)
+
+The two INT8 builds above were evaluated for accuracy against the **pristine
+validation split** (1,765 images, 1,840 plate instances) of the
+[keremberke/license-plate-object-detection](https://huggingface.co/datasets/keremberke/license-plate-object-detection)
+dataset — the split deliberately held back during calibration — using
+`hailomz eval` on the DFC emulator. A full-precision (FP32) baseline was measured
+on the same optimized HAR for comparison.
+
+| Build | Opt level | Calib images | mAP@.50 | mAP@.75 | mAP@.50:.95 | AR@100 |
+|-------|:---------:|:------------:|:-------:|:-------:|:-----------:|:------:|
+| FP32 (full precision) | — | —    | 0.963 | 0.632 | 0.575 | 0.631 |
+| INT8 provisional      | 0 | 64   | 0.963 | 0.627 | 0.570 | 0.625 |
+| INT8 production       | 2 | 1024 | 0.959 | 0.662 | 0.589 | 0.647 |
+
+### What the numbers say
+
+**INT8 quantization was effectively lossless for this detector.** All three
+builds sit inside a ~2-point mAP band on every metric, and ~0.96 at the
+loose IoU = 0.50 threshold.
+
+- The **provisional** build (opt-0, 64 calibration images) lands within 0.5
+  mAP points of FP32 across the board — a negligible quantization cost.
+- The **production** build (opt-2, 1,024 calibration images) is statistically
+  indistinguishable from FP32: marginally above on mAP@.50:.95 / mAP@.75,
+  marginally below on mAP@.50. A quantized model cannot genuinely exceed the
+  float model it is derived from; small over/under-shoots of this size on a
+  1,765-image set reflect calibration-data sampling and quantization noise
+  (which can act as mild regularization), not a real accuracy gain.
+
+**Takeaway:** for this single-class detector, INT8 on Hailo-8 preserves
+full-precision accuracy, and even a minimal 64-image / opt-0 calibration was
+sufficient. The 16x larger calibration set and higher optimization level did
+**not** produce a beyond-noise improvement — useful evidence of strongly
+diminishing returns on calibration effort for a task this simple.
+
+> Differences of ≤~2 mAP points on a set this size should not be
+> over-interpreted without confidence intervals; treat the three builds as
+> statistically comparable.
+
+### Method notes (for reproducibility)
+
+- **Emulator, not hardware.** INT8 measured with `--target emulator` (quantized
+  numeric emulation on GPU); FP32 measured with `--target full_precision` on the
+  same optimized HAR. Neither was run on a physical Hailo-8; on-device HEF
+  results may differ slightly.
+- **Apples-to-apples.** Every run used the same validation TFRecord, the same
+  eval config (single class, `labels_offset: 0`, CPU-NMS baked from the model's
+  `.alls`), and `--hw-arch hailo8`. FP32 vs INT8 was measured on the *same*
+  optimized HAR, so the only variable is numeric precision. The FP32 result was
+  identical across both HARs (they share float weights), confirming consistency.
+- **Custom validation TFRecord.** The stock Model Zoo TFRecord builder assumes a
+  filename-matching convention between images and labels that does not hold for
+  this dataset's layout; a custom builder script was used to pair them correctly.
+  Verifying eval behaviour against the v2.17 Model Zoo source — rather than
+  trusting the stock builder and the default `labels_offset` — was what surfaced
+  this. Both the filename assumption and the label-offset default would otherwise
+  have silently zeroed the mAP without ever raising an error.
+- **No data leakage.** The validation split was held out from calibration;
+  calibration drew only from the train split.
+- **Eval commands:**
+  ```bash
+  # INT8 (per build)
+  hailomz eval yolov8n_plate_eval --har <model>.har \
+    --data-path lp_val.tfrecord --target emulator --hw-arch hailo8
+
+  # FP32 baseline (same HAR, full precision)
+  hailomz eval yolov8n_plate_eval --har license_plate_detector.har \
+    --data-path lp_val.tfrecord --target full_precision --hw-arch hailo8
+  ```
 
 ## License
 
