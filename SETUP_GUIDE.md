@@ -85,7 +85,7 @@ This installs Flask, PyYAML, Ultralytics (YOLO), EasyOCR (for ANPR), and other d
 
 ```bash
 cd ~
-git clone https://github.com/yourusername/ai-security-camera.git
+git clone https://github.com/mi0iou/ai-security-camera.git
 cd ai-security-camera
 ```
 

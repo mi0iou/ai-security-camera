@@ -51,7 +51,7 @@ For complete setup instructions including OS installation and Hailo configuratio
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/ai-security-camera.git
+git clone https://github.com/mi0iou/ai-security-camera.git
 cd ai-security-camera
 
 # Install Python dependencies
