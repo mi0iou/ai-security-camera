@@ -109,5 +109,3 @@ I'm continuing development on my AI Security Camera project. Here's the context:
 - On Debian Trixie, use rpicam-* commands not libcamera-*
 - Dual camera bbox mapping uses pixels-per-degree angular ratio with 30% padding
 - EasyOCR is CPU-only, pinned to 1 thread, runs on a separate thread; read_plate takes optional plate_bbox
-
-I code in Python. I want to: [DESCRIBE WHAT YOU WANT TO DO NEXT]
